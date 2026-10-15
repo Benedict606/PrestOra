@@ -1,0 +1,33 @@
+name: prestora
+description: "PrestOra : application mobile de suivi des prestations et de gestion des états de paie des enseignants visiteurs de l'UCB, du suivi des séances au paiement."
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  flutter_bloc: ^9.1.1
+  shared_preferences: ^2.5.6
+  go_router: ^18.0.2
+  google_fonts: ^8.2.1
+  provider: ^6.1.5+1
+  easy_localization: ^3.0.8
+  firebase_core: ^4.15.0
+  cloud_firestore: ^6.10.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/translations/

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "356627438809",
+    "project_id": "prestora-f2789",
+    "storage_bucket": "prestora-f2789.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:356627438809:android:b97da988dc9d259eca32c8",
+        "android_client_info": {
+          "package_name": "com.example.prestora"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAn_wVfn4jxiPPEiLmNZMbimYfOVMhjiXE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
