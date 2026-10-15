@@ -151,6 +151,11 @@ class DossierWf {
   String? referencePaiement;
   final Map<int, DateTime> dates; // date de traitement de chaque palier
   final List<String> pieces;
+
+  // Renseignés par la Comptabilité à la clôture
+  String? modeReglement; // Virement bancaire / Bon de caisse / Mobile Money
+  String? bordereau; // preuve de paiement (fichier)
+  String? imputation; // imputation budgétaire (à valider)
   final List<String> historique = []; // anciens rejets (après correction)
 
   /// Vue « enseignant » du dossier : sert à la Timeline et aux pastilles déjà écrites.
@@ -251,7 +256,7 @@ DossierWf _d(
   String coord = '0990 000 002',
 }) {
   final fait = rejet ?? (palier >= 7 ? 6 : palier - 1);
-  return DossierWf(
+  final d = DossierWf(
     reference: ref,
     code: code,
     intitule: intitule,
@@ -272,6 +277,11 @@ DossierWf _d(
     referencePaiement: refPaie,
     dates: _dates(init, fait),
   );
+  if (palier >= 7) {
+    d.modeReglement = mode == 'Banque' ? 'Virement bancaire' : 'Mobile Money';
+    d.bordereau = 'bordereau_$ref.pdf';
+  }
+  return d;
 }
 
 CoursTermine _c(
@@ -589,6 +599,108 @@ class PaieStore extends ChangeNotifier {
       DateTime(2026, 10, 10),
       coord: '0990 000 015',
     ),
+    // ── Dossiers chez la Comptabilité ──
+    _d(
+      'UCB-2026-0121',
+      'INF140',
+      "Algèbre pour l'informatique",
+      'L1 Informatique',
+      'Sciences et Technologies',
+      'Pr Joseph Mushagalusa',
+      'Professeur',
+      4,
+      30,
+      11,
+      6,
+      DateTime(2026, 9, 20),
+      mode: 'Banque',
+      coord: 'Rawbank · 0045-7788-1200',
+    ),
+    _d(
+      'UCB-2026-0133',
+      'DRT130',
+      'Droit constitutionnel',
+      'L1 Droit',
+      'Droit',
+      'Dr Esther Namwira',
+      'Professeur Associé',
+      4,
+      30,
+      10,
+      6,
+      DateTime(2026, 10, 1),
+      coord: '0990 000 004',
+    ),
+    _d(
+      'UCB-2026-0136',
+      'MED120',
+      'Biochimie générale',
+      'L1 Santé publique',
+      'Médecine',
+      'Pr Placide Cizungu',
+      'Professeur Ordinaire',
+      5,
+      45,
+      12,
+      6,
+      DateTime(2026, 9, 28),
+      mode: 'Banque',
+      coord: 'Rawbank · 0045-1100-77',
+    ),
+    // ── Dossiers déjà payés ──
+    _d(
+      'UCB-2026-0099',
+      'DRT105',
+      'Introduction à la sociologie',
+      'L1 Droit',
+      'Droit',
+      'Dr Esther Namwira',
+      'Professeur Associé',
+      3,
+      20,
+      10,
+      7,
+      DateTime(2026, 9, 28),
+      h: 4,
+      refPaie: 'MM-2026-1011-118',
+      coord: '0990 000 004',
+    ),
+    _d(
+      'UCB-2026-0102',
+      'ECO105',
+      'Statistiques descriptives',
+      'L1 Économie',
+      'Économie et Gestion',
+      'Pr Alphonse Mulume',
+      'Professeur',
+      4,
+      30,
+      11,
+      7,
+      DateTime(2026, 9, 30),
+      refPaie: 'VIR-2026-1013-052',
+      mode: 'Banque',
+      coord: 'Equity · 3300-8899-12',
+    ),
+    // ── Rejeté par la Comptabilité ──
+    _d(
+      'UCB-2026-0108',
+      'INF060',
+      'Initiation au Web',
+      'L1 Informatique',
+      'Sciences et Technologies',
+      'Dr Grâce Bahati',
+      'Chef de Travaux',
+      3,
+      15,
+      8,
+      6,
+      DateTime(2026, 9, 22),
+      h: 3,
+      rejet: 6,
+      motif:
+          "Numéro Mobile Money invalide : le transfert a été refusé par l'opérateur. Merci de vérifier le numéro avec l'enseignant.",
+    ),
   ];
 
   // ═══ Requêtes Autorité ═══
@@ -623,6 +735,32 @@ class PaieStore extends ChangeNotifier {
 
   int rejetesParMoi(RoleAutorite r) =>
       traites(r).where((d) => rejeteParMoi(r, d)).length;
+
+  // ═══ Requêtes Comptabilité (palier 6) ═══
+  String get comptableNom => 'Mme Nadine Kahindo';
+
+  List<DossierWf> get aPayer => dossiers
+      .where((d) => d.palierRejet == null && d.palierCourant == 6)
+      .toList();
+
+  /// Dossiers déjà traités par la Comptabilité (payés ou rejetés).
+  List<DossierWf> get traitesCompta =>
+      dossiers.where((d) => d.dates.containsKey(6)).toList();
+
+  bool rejeteParCompta(DossierWf d) => d.palierRejet == 6;
+
+  int get payesCeMois => traitesCompta
+      .where(
+        (d) =>
+            !rejeteParCompta(d) &&
+            d.dates[6]!.month == kMaintenant.month &&
+            d.dates[6]!.year == kMaintenant.year,
+      )
+      .length;
+
+  int get rejetesCompta => traitesCompta.where(rejeteParCompta).length;
+
+  double get totalAPayer => aPayer.fold(0.0, (s, d) => s + d.net);
 
   // ═══ Requêtes Secrétaire ═══
   List<CoursTermine> get coursAInitialiser =>
@@ -679,6 +817,24 @@ class PaieStore extends ChangeNotifier {
   void valider(DossierWf d) {
     d.dates[d.palierCourant] = kMaintenant;
     d.palierCourant += 1;
+    notifyListeners();
+  }
+
+  /// Comptabilité : enregistre le règlement et clôture le dossier (PAYÉ, définitif).
+  void payer(
+    DossierWf d, {
+    required String reference,
+    required DateTime date,
+    required String modeReglement,
+    required String bordereau,
+    String? imputation,
+  }) {
+    d.referencePaiement = reference;
+    d.modeReglement = modeReglement;
+    d.bordereau = bordereau;
+    d.imputation = imputation;
+    d.dates[6] = date;
+    d.palierCourant = 7;
     notifyListeners();
   }
 

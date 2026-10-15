@@ -87,8 +87,8 @@ class _StatsViewState extends State<StatsView> {
         return ListView(
           padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
           children: [
-            Text('Statistiques', style: t.displayMedium),
-            const SizedBox(height: 16),
+            Text('Statistiques', style: t.displaySmall),
+            const SizedBox(height: 20),
 
             // ── Filtres ──
             PillRow(
@@ -110,7 +110,7 @@ class _StatsViewState extends State<StatsView> {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 15),
             if (fixe != null)
               Align(
                 alignment: Alignment.centerLeft,
@@ -132,7 +132,7 @@ class _StatsViewState extends State<StatsView> {
                     ),
                 ],
               ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 30),
 
             // ── KPI ──
             Row(
@@ -141,7 +141,7 @@ class _StatsViewState extends State<StatsView> {
                   child: PaieKpi(
                     icon: Icons.schedule_outlined,
                     value: fmtH(heures),
-                    label: 'Heures prestées',
+                    label: 'Heures \nprestées',
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -150,7 +150,7 @@ class _StatsViewState extends State<StatsView> {
                     icon: Icons.timelapse,
                     value:
                         '${delaiMoyen.toStringAsFixed(1).replaceAll('.', ',')} j',
-                    label: 'Délai moyen par palier',
+                    label: 'Délai moyen \npar palier',
                   ),
                 ),
               ],
@@ -162,7 +162,7 @@ class _StatsViewState extends State<StatsView> {
                   child: PaieKpi(
                     icon: Icons.hourglass_top_outlined,
                     value: fmtMontant(montantAttente),
-                    label: 'Montant en attente',
+                    label: 'Montant en \nattente',
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -170,7 +170,7 @@ class _StatsViewState extends State<StatsView> {
                   child: PaieKpi(
                     icon: Icons.verified_outlined,
                     value: fmtMontant(montantPaye),
-                    label: 'Montant payé',
+                    label: 'Montant \npayé',
                   ),
                 ),
               ],

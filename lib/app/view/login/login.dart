@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:prestora/app/shared/styles/images.dart';
+import 'package:prestora/app/view/payslip/accountant/comptabilite.dart';
 import 'package:prestora/app/view/payslip/authority/autorite.dart';
 import 'package:prestora/app/view/payslip/authority/paie_data.dart';
+import 'package:prestora/app/view/payslip/secretary/secretaire.dart';
 import 'package:prestora/app/view/prestation/student/student.dart';
 import 'package:prestora/app/view/prestation/supervisor/encadreur.dart';
 import 'package:prestora/app/view/teacher/enseignant.dart';
@@ -22,6 +24,8 @@ enum DemoRole {
   vra,
   recteur,
   ag,
+  commptable,
+  secretaire,
 }
 
 class DemoAccount {
@@ -53,6 +57,8 @@ class DemoAccount {
     DemoRole.vra => Autorite(role: RoleAutorite.vra),
     DemoRole.ag => Autorite(role: RoleAutorite.ag),
     DemoRole.recteur => Autorite(role: RoleAutorite.recteur),
+    DemoRole.commptable => const Comptabilite(),
+    DemoRole.secretaire => const Secretaire(),
   };
 }
 
@@ -93,6 +99,15 @@ List kDemoAccounts = <DemoAccount>[
     icon: Icons.groups_outlined,
     route: Etudiant.route,
   ),
+  DemoAccount(
+    role: DemoRole.secretaire,
+    label: 'Secrétaire',
+    nom: 'Mme Rachel Zawadi',
+    email: 'r.zawadi@exemple.org',
+    password: 'Secretaire@2026',
+    icon: Icons.edit_note_outlined,
+    route: Secretaire.route,
+  ),
 
   DemoAccount(
     role: DemoRole.doyen,
@@ -132,6 +147,16 @@ List kDemoAccounts = <DemoAccount>[
     password: 'AG@2026',
     icon: Icons.business_center_outlined,
     route: Autorite.routeAg,
+  ),
+
+  DemoAccount(
+    role: DemoRole.commptable,
+    label: 'Comptabilité',
+    nom: 'Mme Nadine Kahindo',
+    email: 'n.kahindo@exemple.org',
+    password: 'Compta@2026',
+    icon: Icons.account_balance_wallet_outlined,
+    route: Comptabilite.route,
   ),
 ];
 

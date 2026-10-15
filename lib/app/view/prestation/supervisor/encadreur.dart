@@ -22,20 +22,6 @@ class Encadreur extends StatelessWidget {
     final scheme = theme.colorScheme;
     final t = theme.textTheme;
 
-    void _openDialog() {
-      showDialog<void>(
-        context: context,
-        builder: (ctx) => Dialog(
-          alignment: Alignment.topCenter,
-          child: Container(
-            padding: const EdgeInsets.all(16.0),
-            margin: const EdgeInsets.only(top: 20),
-            child: const Text("data"),
-          ),
-        ),
-      );
-    }
-
     return BlocConsumer<MainCubit, MainState>(
       listener: (context, state) {},
       builder: (context, state) {

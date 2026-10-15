@@ -31,20 +31,6 @@ class _EnseignantState extends State<Enseignant> {
     final scheme = theme.colorScheme;
     final t = theme.textTheme;
 
-    void _openDialog() {
-      showDialog<void>(
-        context: context,
-        builder: (ctx) => Dialog(
-          alignment: Alignment.topCenter,
-          child: Container(
-            padding: const EdgeInsets.all(16.0),
-            margin: const EdgeInsets.only(top: 20),
-            child: const Text("data"),
-          ),
-        ),
-      );
-    }
-
     return BlocConsumer<MainCubit, MainState>(
       listener: (context, state) {},
       builder: (context, state) {
@@ -53,6 +39,8 @@ class _EnseignantState extends State<Enseignant> {
         return Scaffold(
           // ─────────────  AppBar  ─────────────
           appBar: AppBar(
+            automaticallyImplyLeading: false,
+
             title: Row(
               mainAxisSize: MainAxisSize.min,
               children: [

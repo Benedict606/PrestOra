@@ -1,7 +1,9 @@
 import 'package:prestora/app/view/admin/admin.dart';
 import 'package:prestora/app/view/home/home.dart';
 import 'package:prestora/app/view/login/login.dart';
+import 'package:prestora/app/view/payslip/accountant/comptabilite.dart';
 import 'package:prestora/app/view/payslip/authority/autorite.dart';
+import 'package:prestora/app/view/payslip/secretary/secretaire.dart';
 import 'package:prestora/app/view/prestation/student/student.dart';
 import 'package:prestora/app/view/prestation/supervisor/Encadreur.dart';
 import 'package:prestora/app/view/setting/setting.dart';
@@ -21,4 +23,6 @@ class RoutePath {
   static dynamic vra = Autorite.routeVra;
   static dynamic recteur = Autorite.routeRecteur;
   static dynamic ag = Autorite.routeAg;
+  static dynamic secretaire = Secretaire.route;
+  static dynamic comptabilite = Comptabilite.route;
 }

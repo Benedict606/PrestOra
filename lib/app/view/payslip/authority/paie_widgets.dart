@@ -3,8 +3,6 @@ import 'package:prestora/app/view/prestation/student/etudiant_data.dart';
 import 'package:prestora/app/view/teacher/enseignant_data.dart';
 import 'package:prestora/app/view/teacher/enseignant_modules.dart';
 
-// Widgets déjà écrits pour les autres rôles : on les réutilise.
-
 import 'paie_data.dart';
 
 void paieSnack(BuildContext context, String message) {
@@ -301,6 +299,10 @@ class DossierPage extends StatelessWidget {
                         fmtDate(d.dates[6] ?? kMaintenant),
                       ),
                       InfoRow('Référence', d.referencePaiement ?? '—'),
+                      InfoRow('Mode de règlement', d.modeReglement ?? '—'),
+                      InfoRow('Bordereau', d.bordereau ?? '—'),
+                      if (d.imputation != null && d.imputation!.isNotEmpty)
+                        InfoRow('Imputation budgétaire', d.imputation!),
                     ]),
                   ],
 
