@@ -5,7 +5,7 @@ import 'package:prestora/app/view/payslip/accountant/comptabilite.dart';
 import 'package:prestora/app/view/payslip/authority/autorite.dart';
 import 'package:prestora/app/view/payslip/secretary/secretaire.dart';
 import 'package:prestora/app/view/prestation/student/student.dart';
-import 'package:prestora/app/view/prestation/supervisor/Encadreur.dart';
+import 'package:prestora/app/view/prestation/supervisor/encadreur.dart';
 import 'package:prestora/app/view/setting/setting.dart';
 import 'package:prestora/app/view/teacher/enseignant.dart';
 import 'package:prestora/mainview.dart';

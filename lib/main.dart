@@ -5,6 +5,8 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:prestora/app/routes/routes.conf.dart';
 import 'package:prestora/app/shared/styles/colors.dart';
 import 'package:prestora/app/shared/styles/themes/theme.dart';
+import 'package:prestora/core/notify.dart';
+import 'package:prestora/data/services/session.dart';
 import 'package:prestora/controller/cubit/cubit.dart';
 import 'package:prestora/controller/state/state.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,6 +17,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await EasyLocalization.ensureInitialized();
+  await Session.instance.init(); // état de connexion + profil
   SharedPreferences sharedPreferences = await SharedPreferences.getInstance();
   bool isDark = sharedPreferences.getBool('isDark') ?? false;
 
@@ -74,6 +77,7 @@ class PrestOra extends StatelessWidget {
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: dark ? ThemeMode.dark : ThemeMode.light,
+            scaffoldMessengerKey: rootMessengerKey,
             routerConfig: router,
             builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
               value: overlay,

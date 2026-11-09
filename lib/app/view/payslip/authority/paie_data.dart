@@ -1,14 +1,23 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:prestora/app/view/prestation/student/etudiant_data.dart';
 import 'package:prestora/app/view/teacher/enseignant_data.dart';
+import 'package:prestora/core/notify.dart';
+import 'package:prestora/data/firebase/fb.dart';
+import 'package:prestora/data/repositories/paie_repository.dart';
+import 'package:prestora/data/repositories/suivi_store_base.dart';
+import 'package:prestora/data/services/session.dart';
+import 'package:prestora/app/view/admin/admin_data.dart' show TypeCompte;
 
 // ═══════════════════════════════════════════════════════════════
-//  Circuit de paie partagé : Secrétaire → Doyen → VRA → Recteur → AG
-//  PaieStore = faux dépôt commun, à remplacer par vos Cubits / Firebase.
+//  Circuit de paie : Secrétaire → Doyen → VRA → Recteur → AG → Comptabilité
+//  PaieStore lit/écrit Firestore (dossiers_paie, validations).
 // ═══════════════════════════════════════════════════════════════
 
-/// « Aujourd'hui » figé pour que la démo soit reproductible.
-final DateTime kMaintenant = DateTime(2026, 10, 15);
+/// « Maintenant » : l'heure réelle.
+DateTime get kMaintenant => DateTime.now();
 
 String fmtDate(DateTime d) =>
     '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
@@ -18,82 +27,57 @@ String fmtMontant(double v) =>
 
 // ───────────────────────── Les 4 autorités ─────────────────────────
 enum RoleAutorite {
-  doyen(2, 'Doyen', 'Pr Fidèle Bashige', 'Sciences et Technologies', 'au VRA'),
-  vra(3, 'Vice-recteur académique', 'Pr Claire Mukamba', null, 'au Recteur'),
-  recteur(
-    4,
-    'Recteur',
-    'Pr Samuel Kasereka',
-    null,
-    "à l'Administrateur général",
-  ),
-  ag(
-    5,
-    'Administrateur général',
-    'M. Jonathan Mwamba',
-    null,
-    'à la Comptabilité',
-  );
+  doyen(2, 'Doyen', 'au VRA'),
+  vra(3, 'Vice-recteur académique', 'au Recteur'),
+  recteur(4, 'Recteur', "à l'Administrateur général"),
+  ag(5, 'Administrateur général', 'à la Comptabilité');
 
-  const RoleAutorite(
-    this.palier,
-    this.titre,
-    this.nom,
-    this.faculte,
-    this.suivant,
-  );
+  const RoleAutorite(this.palier, this.titre, this.suivant);
 
   final int palier; // palier du circuit (2 à 5)
   final String titre;
-  final String nom;
-  final String? faculte; // non null = limité à une faculté (Doyen)
   final String suivant; // destinataire après validation
 
-  String get court =>
-      kActeursCourts[palier - 1]; // « Doyen », « VRA », « Recteur », « AG »
-  String get initiale => nom.split(' ').length > 1
-      ? nom.split(' ')[1].substring(0, 1)
-      : nom.substring(0, 1);
+  /// Nom de la personne connectée.
+  String get nom => Session.instance.me?.nomComplet ?? titre;
+
+  /// Faculté du Doyen (limite sa portée) ; null pour les rôles globaux.
+  String? get faculte =>
+      this == RoleAutorite.doyen ? (Session.instance.faculteNom ?? '') : null;
+
+  String get court => kActeursCourts[palier - 1];
+
+  String get initiale {
+    final n = Session.instance.me?.nom ?? '';
+    return n.isEmpty ? '?' : n.substring(0, 1).toUpperCase();
+  }
 }
 
-/// Nom de la personne qui occupe un palier (pour « rejeté par … »).
-String nomDuPalier(int palier) {
-  if (palier == 1) return 'Mme Rachel Zawadi';
-  if (palier == 6) return 'Mme Nadine Kahindo';
-  return RoleAutorite.values.firstWhere((r) => r.palier == palier).nom;
-}
+/// Libellé générique d'un palier (repli quand le nom de l'acteur est inconnu).
+String nomDuPalier(int palier) => kActeurs[palier - 1];
 
 // ───────────────────────── Modèles ─────────────────────────
-/// Cours clôturé par l'encadreur, en attente d'initialisation du dossier par le secrétaire.
+/// Cours clôturé par l'encadreur, en attente d'initialisation du dossier.
 class CoursTermine {
-  CoursTermine({
-    required this.code,
-    required this.intitule,
-    required this.promotion,
-    required this.faculte,
-    required this.enseignant,
-    required this.grade,
-    required this.taux,
-    required this.credits,
-    required this.volume,
-    required this.seances,
-    required this.mode,
-    required this.coordonnees,
-  });
+  CoursTermine({required this.id});
+  final String id; // identifiant de la session de suivi
 
-  final String code;
-  final String intitule;
-  final String promotion;
-  final String faculte;
-  final String enseignant;
-  final String grade;
-  final double taux;
-  final int credits;
-  final int volume;
-  final List<Seance> seances;
-  final String
-  mode; // « Banque » ou « Mobile Money » (pré-rempli depuis le profil)
-  final String coordonnees;
+  String code = '';
+  String intitule = '';
+  String promotion = '';
+  String faculte = '';
+  String faculteId = '';
+  String enseignant = '';
+  String enseignantId = '';
+  String grade = '';
+  String coursId = '';
+  double taux = 0;
+  int credits = 0;
+  int volume = 0;
+  List<Seance> seances = [];
+  String mode = 'Banque';
+  String coordonnees = '';
+  String? chefNom;
 
   double get heures => seances.fold(0.0, (s, e) => s + e.heures);
   double get brut => heures * taux;
@@ -115,6 +99,12 @@ class DossierWf {
     required this.mode,
     required this.coordonnees,
     required this.dateInit,
+    this.id = '',
+    this.anneeId = '',
+    this.faculteId = '',
+    this.enseignantId = '',
+    this.retenuePct,
+    this.chefNom,
     this.palierCourant = 1,
     this.palierRejet,
     this.motifRejet,
@@ -122,13 +112,14 @@ class DossierWf {
     Map<int, DateTime>? dates,
     List<String>? pieces,
   }) : dates = dates ?? {},
-       pieces =
-           pieces ??
-           [
-             for (final s in seances)
-               if (s.preuve != null) s.preuve!,
-           ];
+       pieces = pieces ?? [];
 
+  final String id; // = identifiant de la session de suivi
+  final String anneeId;
+  final String faculteId;
+  final String enseignantId;
+  final double? retenuePct;
+  final String? chefNom;
   final String reference;
   final String code;
   final String intitule;
@@ -150,15 +141,106 @@ class DossierWf {
   String? motifRejet;
   String? referencePaiement;
   final Map<int, DateTime> dates; // date de traitement de chaque palier
+  final Map<int, String> acteurs = {}; // nom de la personne par palier
   final List<String> pieces;
+  final List<String> piecesIds = []; // alignés sur [pieces]
 
   // Renseignés par la Comptabilité à la clôture
   String? modeReglement; // Virement bancaire / Bon de caisse / Mobile Money
   String? bordereau; // preuve de paiement (fichier)
-  String? imputation; // imputation budgétaire (à valider)
+  String? bordereauId; // document de la collection `pieces`
+  String? imputation; // imputation budgétaire
   final List<String> historique = []; // anciens rejets (après correction)
 
-  /// Vue « enseignant » du dossier : sert à la Timeline et aux pastilles déjà écrites.
+  /// Met à jour les champs qui évoluent pendant le circuit.
+  void applyMap(Map<String, dynamic> m) {
+    mode = (m['mode'] as String?) ?? mode;
+    coordonnees = (m['coordonnees'] as String?) ?? coordonnees;
+    palierCourant = (m['palier_courant'] as num?)?.toInt() ?? 1;
+    palierRejet = (m['palier_rejet'] as num?)?.toInt();
+    motifRejet = m['motif_rejet'] as String?;
+    referencePaiement = m['reference_paiement'] as String?;
+    modeReglement = m['mode_reglement'] as String?;
+    bordereau = m['bordereau'] as String?;
+    bordereauId = m['bordereau_id'] as String?;
+    piecesIds
+      ..clear()
+      ..addAll(((m['pieces_ids'] as List?) ?? const []).whereType<String>());
+    imputation = m['imputation'] as String?;
+    dates.clear();
+    final dm = m['dates'];
+    if (dm is Map) {
+      dm.forEach((k, v) {
+        final p = int.tryParse('$k');
+        final dt = Fb.date(v);
+        if (p != null && dt != null) dates[p] = dt;
+      });
+    }
+    acteurs.clear();
+    final am = m['acteurs'];
+    if (am is Map) {
+      am.forEach((k, v) {
+        final p = int.tryParse('$k');
+        if (p != null && v is String) acteurs[p] = v;
+      });
+    }
+    pieces
+      ..clear()
+      ..addAll(((m['pieces'] as List?) ?? const []).whereType<String>());
+    historique
+      ..clear()
+      ..addAll(((m['historique'] as List?) ?? const []).whereType<String>());
+  }
+
+  factory DossierWf.fromDoc(String id, Map<String, dynamic> m) {
+    final seances = <Seance>[];
+    final raw = (m['seances'] as List?) ?? const [];
+    for (var i = 0; i < raw.length; i++) {
+      final x = raw[i];
+      if (x is! Map) continue;
+      final a = (x['debut'] as num?)?.toInt() ?? 0;
+      final b = (x['fin'] as num?)?.toInt() ?? 0;
+      seances.add(
+        Seance(
+          id: '$id-$i',
+          date: Fb.date(x['date']) ?? DateTime.now(),
+          debut: TimeOfDay(hour: a ~/ 60, minute: a % 60),
+          fin: TimeOfDay(hour: b ~/ 60, minute: b % 60),
+          chapitre: (x['chapitre'] as String?) ?? '',
+          type: TypeSeance.from(x['type'] as String?),
+          validee: true,
+          preuve: x['preuve'] as String?,
+          preuveId: x['preuve_id'] as String?,
+        ),
+      );
+    }
+    final d = DossierWf(
+      id: id,
+      anneeId: (m['annee_id'] as String?) ?? '',
+      faculteId: (m['faculte_id'] as String?) ?? '',
+      enseignantId: (m['enseignant_id'] as String?) ?? '',
+      retenuePct: (m['retenue_pct'] as num?)?.toDouble(),
+      chefNom: m['chef_nom'] as String?,
+      reference: (m['reference'] as String?) ?? id,
+      code: (m['code'] as String?) ?? '',
+      intitule: (m['intitule'] as String?) ?? '',
+      promotion: (m['promotion_nom'] as String?) ?? '',
+      faculte: (m['faculte_nom'] as String?) ?? '',
+      enseignant: (m['enseignant_nom'] as String?) ?? '',
+      grade: (m['grade'] as String?) ?? '',
+      credits: (m['credits'] as num?)?.toInt() ?? 0,
+      volume: (m['volume'] as num?)?.toInt() ?? 0,
+      seances: seances,
+      taux: (m['taux'] as num?)?.toDouble() ?? 0,
+      mode: (m['mode'] as String?) ?? 'Banque',
+      coordonnees: (m['coordonnees'] as String?) ?? '',
+      dateInit: Fb.date(m['date_init']) ?? DateTime.now(),
+    );
+    d.applyMap(m);
+    return d;
+  }
+
+  /// Vue « enseignant » du dossier : sert à la Timeline et aux pastilles.
   DossierPaie get snapshot => DossierPaie(
     reference: reference,
     code: code,
@@ -174,7 +256,8 @@ class DossierWf {
     modePaiement: '$mode · $coordonnees',
     motifRejet: motifRejet,
     referencePaiement: referencePaiement,
-    // dates: dates,
+    dates: Map<int, DateTime>.of(dates),
+    retenuePct: retenuePct,
   );
 
   double get heures => snapshot.heures;
@@ -191,521 +274,183 @@ class DossierWf {
   DateTime get recuLe => dates[palierCourant - 1] ?? dateInit;
   int get ancienneteJours => kMaintenant.difference(recuLe).inDays;
 
-  String? get rejetePar => palierRejet == null
-      ? null
-      : '${kActeursCourts[palierRejet! - 1]} ${nomDuPalier(palierRejet!)}';
-}
-
-// ───────────────────────── Aides de fabrication ─────────────────────────
-const _chap = [
-  'Introduction',
-  'Notions fondamentales',
-  'Approfondissement',
-  'Études de cas',
-  'Travaux pratiques',
-  'Révision',
-  'Évaluation',
-  'Synthèse',
-  'Projet',
-  'Mise en pratique',
-  'Exercices dirigés',
-  'Bilan',
-];
-
-List<Seance> _gen(String p, int volume, int h) {
-  final n = volume ~/ h;
-  return List.generate(
-    n,
-    (i) => Seance(
-      id: '$p$i',
-      date: DateTime(2026, 8, 20).add(Duration(days: i * 4)),
-      debut: const TimeOfDay(hour: 8, minute: 0),
-      fin: TimeOfDay(hour: 8 + h, minute: 0),
-      chapitre: _chap[i % _chap.length],
-      validee: true,
-      preuve: 'registre_${p}_${i + 1}.jpg',
-    ),
-  );
-}
-
-/// Jours écoulés depuis l'initialisation, palier par palier (délais variables pour les statistiques).
-const _decalage = [0, 2, 5, 7, 11, 13];
-
-Map<int, DateTime> _dates(DateTime init, int upTo) => {
-  for (var p = 1; p <= upTo; p++) p: init.add(Duration(days: _decalage[p - 1])),
-};
-
-DossierWf _d(
-  String ref,
-  String code,
-  String intitule,
-  String promo,
-  String fac,
-  String ens,
-  String grade,
-  int credits,
-  int volume,
-  double taux,
-  int palier,
-  DateTime init, {
-  int h = 5,
-  int? rejet,
-  String? motif,
-  String? refPaie,
-  String mode = 'Mobile Money',
-  String coord = '0990 000 002',
-}) {
-  final fait = rejet ?? (palier >= 7 ? 6 : palier - 1);
-  final d = DossierWf(
-    reference: ref,
-    code: code,
-    intitule: intitule,
-    promotion: promo,
-    faculte: fac,
-    enseignant: ens,
-    grade: grade,
-    credits: credits,
-    volume: volume,
-    taux: taux,
-    palierCourant: palier,
-    dateInit: init,
-    seances: _gen(code, volume, h),
-    mode: mode,
-    coordonnees: coord,
-    palierRejet: rejet,
-    motifRejet: motif,
-    referencePaiement: refPaie,
-    dates: _dates(init, fait),
-  );
-  if (palier >= 7) {
-    d.modeReglement = mode == 'Banque' ? 'Virement bancaire' : 'Mobile Money';
-    d.bordereau = 'bordereau_$ref.pdf';
+  String? get rejetePar {
+    final p = palierRejet;
+    if (p == null) return null;
+    final nom = acteurs[p];
+    return nom == null
+        ? kActeursCourts[p - 1]
+        : '${kActeursCourts[p - 1]} $nom';
   }
-  return d;
 }
 
-CoursTermine _c(
-  String code,
-  String intitule,
-  String promo,
-  String ens,
-  String grade,
-  double taux,
-  int credits,
-  int volume,
-  int h,
-  String mode,
-  String coord,
-) => CoursTermine(
-  code: code,
-  intitule: intitule,
-  promotion: promo,
-  faculte: 'Sciences et Technologies',
-  enseignant: ens,
-  grade: grade,
-  taux: taux,
-  credits: credits,
-  volume: volume,
-  seances: _gen(code, volume, h),
-  mode: mode,
-  coordonnees: coord,
-);
+// ───────────────────────── Dépôt Firestore ─────────────────────────
+class PaieStore extends SuiviStoreBase {
+  String get secretaireNom => Session.instance.me?.nomComplet ?? '';
+  String get secretaireFaculte => Session.instance.faculteNom ?? '';
+  String get comptableNom => Session.instance.me?.nomComplet ?? '';
 
-// ───────────────────────── Faux dépôt ─────────────────────────
-class PaieStore extends ChangeNotifier {
-  final String secretaireNom = 'Mme Rachel Zawadi';
-  final String secretaireFaculte = 'Sciences et Technologies';
-  int _seq = 171;
+  String get initiale {
+    final n = Session.instance.me?.nom ?? '';
+    return n.isEmpty ? '?' : n.substring(0, 1).toUpperCase();
+  }
 
-  final List<String> facultes = const [
-    'Sciences et Technologies',
-    'Droit',
-    'Économie et Gestion',
-    'Médecine',
-  ];
+  List<String> facultes = [];
+  List<DossierWf> dossiers = [];
+  List<CoursTermine> coursTermines = [];
 
-  late final List<CoursTermine> coursTermines = [
-    _c(
-      'INF101',
-      "Introduction à l'algorithmique",
-      'L1 Informatique',
-      'Dr Grâce Bahati',
-      'Chef de Travaux',
-      8,
-      4,
-      30,
-      5,
-      'Mobile Money',
-      '0990 000 002',
-    ),
-    _c(
-      'INF230',
-      'Génie logiciel',
-      'L2 Informatique',
-      'Dr Esther Namwira',
-      'Professeur Associé',
-      10,
-      4,
-      30,
-      5,
-      'Mobile Money',
-      '0990 000 004',
-    ),
-    _c(
-      'INF104',
-      'Anglais technique',
-      'L1 Informatique',
-      'M. Roger Mwenebatu',
-      'Assistant',
-      6,
-      2,
-      15,
-      3,
-      'Banque',
-      'Equity · 3300-1122-45',
-    ),
-  ];
+  final Map<String, DossierWf> _wf = {};
+  final Map<String, CoursTermine> _ct = {};
+  final Map<String, double> _taux = {};
+  final Map<String, (String, String)> _paiement = {};
+  final Set<String> _paiementDemande = {};
+  final List<StreamSubscription<dynamic>> _subs = [];
 
-  late final List<DossierWf> dossiers = [
-    _d(
-      'UCB-2026-0156',
-      'INF110',
-      'Bureautique et internet',
-      'L1 Informatique',
-      'Sciences et Technologies',
-      'Dr Grâce Bahati',
-      'Chef de Travaux',
-      3,
-      15,
-      8,
-      2,
-      DateTime(2026, 10, 8),
-      h: 3,
-    ),
-    _d(
-      'UCB-2026-0142',
-      'INF120',
-      'Structures de données',
-      'L1 Informatique',
-      'Sciences et Technologies',
-      'Dr Grâce Bahati',
-      'Chef de Travaux',
-      4,
-      30,
-      8,
-      5,
-      DateTime(2026, 9, 28),
-    ),
-    _d(
-      'UCB-2026-0119',
-      'INF050',
-      'Atelier de programmation',
-      'L2 Informatique',
-      'Sciences et Technologies',
-      'Dr Grâce Bahati',
-      'Chef de Travaux',
-      3,
-      15,
-      8,
-      3,
-      DateTime(2026, 9, 14),
-      h: 3,
-      rejet: 3,
-      motif:
-          'Discordance entre les heures encodées (15 h) et la fiche de présence signée (12 h). Merci de corriger puis de réinitialiser le dossier.',
-    ),
-    _d(
-      'UCB-2026-0087',
-      'INF090',
-      "Initiation à l'informatique",
-      'L1 Informatique',
-      'Sciences et Technologies',
-      'Dr Grâce Bahati',
-      'Chef de Travaux',
-      3,
-      20,
-      8,
-      7,
-      DateTime(2026, 7, 10),
-      h: 4,
-      refPaie: 'MM-2026-0720-4471',
-    ),
-    _d(
-      'UCB-2026-0160',
-      'MAT215',
-      'Probabilités et statistiques',
-      'L2 Informatique',
-      'Sciences et Technologies',
-      'Pr Joseph Mushagalusa',
-      'Professeur',
-      4,
-      30,
-      11,
-      2,
-      DateTime(2026, 10, 9),
-      mode: 'Banque',
-      coord: 'Rawbank · 0045-7788-1200',
-    ),
-    _d(
-      'UCB-2026-0163',
-      'INF220',
-      "Systèmes d'exploitation",
-      'L2 Informatique',
-      'Sciences et Technologies',
-      'Pr Aimé Cirimwami',
-      'Professeur Ordinaire',
-      4,
-      30,
-      12,
-      3,
-      DateTime(2026, 10, 2),
-      mode: 'Banque',
-      coord: 'Banque Centrale · 0012-3456-7890',
-    ),
-    _d(
-      'UCB-2026-0165',
-      'INF215',
-      'Réseaux informatiques',
-      'L2 Informatique',
-      'Sciences et Technologies',
-      'Dr Alain Bulambo',
-      'Professeur Associé',
-      4,
-      30,
-      10,
-      4,
-      DateTime(2026, 9, 25),
-      coord: '0990 000 007',
-    ),
-    _d(
-      'UCB-2026-0170',
-      'INF305',
-      'Architecture logicielle',
-      'L3 Informatique',
-      'Sciences et Technologies',
-      'Dr Grâce Bahati',
-      'Chef de Travaux',
-      4,
-      30,
-      8,
-      1,
-      DateTime(2026, 10, 12),
-    ),
-    _d(
-      'UCB-2026-0131',
-      'DRT110',
-      'Introduction au droit civil',
-      'L1 Droit',
-      'Droit',
-      'Dr Esther Namwira',
-      'Professeur Associé',
-      4,
-      30,
-      10,
-      3,
-      DateTime(2026, 10, 1),
-      coord: '0990 000 004',
-    ),
-    _d(
-      'UCB-2026-0138',
-      'DRT320',
-      'Droit international public',
-      'L3 Droit public',
-      'Droit',
-      'Pr Joseph Mushagalusa',
-      'Professeur',
-      4,
-      45,
-      11,
-      4,
-      DateTime(2026, 9, 27),
-      mode: 'Banque',
-      coord: 'Rawbank · 0045-7788-1200',
-    ),
-    _d(
-      'UCB-2026-0124',
-      'DRT215',
-      'Procédure pénale',
-      'L2 Droit',
-      'Droit',
-      'Dr Esther Namwira',
-      'Professeur Associé',
-      3,
-      30,
-      10,
-      5,
-      DateTime(2026, 9, 20),
-      coord: '0990 000 004',
-    ),
-    _d(
-      'UCB-2026-0149',
-      'ECO120',
-      'Microéconomie',
-      'L1 Économie',
-      'Économie et Gestion',
-      'Dr Dieudonné Rugarama',
-      'Professeur Associé',
-      5,
-      45,
-      10,
-      3,
-      DateTime(2026, 10, 3),
-      coord: '0990 000 011',
-    ),
-    _d(
-      'UCB-2026-0127',
-      'GES240',
-      'Management des organisations',
-      'L2 Gestion',
-      'Économie et Gestion',
-      'Pr Alphonse Mulume',
-      'Professeur',
-      4,
-      30,
-      11,
-      6,
-      DateTime(2026, 9, 15),
-      mode: 'Banque',
-      coord: 'Equity · 3300-8899-12',
-    ),
-    _d(
-      'UCB-2026-0152',
-      'MED210',
-      'Anatomie descriptive',
-      'L2 Médecine',
-      'Médecine',
-      'Pr Placide Cizungu',
-      'Professeur Ordinaire',
-      6,
-      60,
-      12,
-      4,
-      DateTime(2026, 10, 5),
-      mode: 'Banque',
-      coord: 'Rawbank · 0045-1100-77',
-    ),
-    _d(
-      'UCB-2026-0144',
-      'SPB110',
-      'Épidémiologie générale',
-      'L1 Santé publique',
-      'Médecine',
-      'Dr Fabrice Lunanga',
-      'Chef de Travaux',
-      3,
-      30,
-      8,
-      2,
-      DateTime(2026, 10, 10),
-      coord: '0990 000 015',
-    ),
-    // ── Dossiers chez la Comptabilité ──
-    _d(
-      'UCB-2026-0121',
-      'INF140',
-      "Algèbre pour l'informatique",
-      'L1 Informatique',
-      'Sciences et Technologies',
-      'Pr Joseph Mushagalusa',
-      'Professeur',
-      4,
-      30,
-      11,
-      6,
-      DateTime(2026, 9, 20),
-      mode: 'Banque',
-      coord: 'Rawbank · 0045-7788-1200',
-    ),
-    _d(
-      'UCB-2026-0133',
-      'DRT130',
-      'Droit constitutionnel',
-      'L1 Droit',
-      'Droit',
-      'Dr Esther Namwira',
-      'Professeur Associé',
-      4,
-      30,
-      10,
-      6,
-      DateTime(2026, 10, 1),
-      coord: '0990 000 004',
-    ),
-    _d(
-      'UCB-2026-0136',
-      'MED120',
-      'Biochimie générale',
-      'L1 Santé publique',
-      'Médecine',
-      'Pr Placide Cizungu',
-      'Professeur Ordinaire',
-      5,
-      45,
-      12,
-      6,
-      DateTime(2026, 9, 28),
-      mode: 'Banque',
-      coord: 'Rawbank · 0045-1100-77',
-    ),
-    // ── Dossiers déjà payés ──
-    _d(
-      'UCB-2026-0099',
-      'DRT105',
-      'Introduction à la sociologie',
-      'L1 Droit',
-      'Droit',
-      'Dr Esther Namwira',
-      'Professeur Associé',
-      3,
-      20,
-      10,
-      7,
-      DateTime(2026, 9, 28),
-      h: 4,
-      refPaie: 'MM-2026-1011-118',
-      coord: '0990 000 004',
-    ),
-    _d(
-      'UCB-2026-0102',
-      'ECO105',
-      'Statistiques descriptives',
-      'L1 Économie',
-      'Économie et Gestion',
-      'Pr Alphonse Mulume',
-      'Professeur',
-      4,
-      30,
-      11,
-      7,
-      DateTime(2026, 9, 30),
-      refPaie: 'VIR-2026-1013-052',
-      mode: 'Banque',
-      coord: 'Equity · 3300-8899-12',
-    ),
-    // ── Rejeté par la Comptabilité ──
-    _d(
-      'UCB-2026-0108',
-      'INF060',
-      'Initiation au Web',
-      'L1 Informatique',
-      'Sciences et Technologies',
-      'Dr Grâce Bahati',
-      'Chef de Travaux',
-      3,
-      15,
-      8,
-      6,
-      DateTime(2026, 9, 22),
-      h: 3,
-      rejet: 6,
-      motif:
-          "Numéro Mobile Money invalide : le transfert a été refusé par l'opérateur. Merci de vérifier le numéro avec l'enseignant.",
-    ),
-  ];
+  PaieRepository get _repo => PaieRepository.instance;
 
-  // ═══ Requêtes Autorité ═══
+  // ── Écoute ──
+  @override
+  Query<Map<String, dynamic>>? requete(String anneeId, String uid) {
+    final me = Session.instance.me;
+    if (me?.type != TypeCompte.secretaire || me?.faculteId == null) {
+      return null;
+    }
+    // Cours clôturés de la faculté : ceux qui n'ont pas encore de dossier
+    return sessionsQuery(anneeId)
+        .where('faculte_id', isEqualTo: me!.faculteId)
+        .where('est_cloturee', isEqualTo: true);
+  }
+
+  void _cancel() {
+    for (final s in _subs) {
+      s.cancel();
+    }
+    _subs.clear();
+  }
+
+  @override
+  void onSessionChange(String? anneeId) {
+    _cancel();
+    final me = Session.instance.me;
+    if (anneeId == null || me == null) {
+      _wf.clear();
+      _ct.clear();
+      dossiers = [];
+      coursTermines = [];
+      facultes = [];
+      return;
+    }
+    final db = Fb.db;
+    Query<Map<String, dynamic>> q = db
+        .collection(Col.dossiers)
+        .where('annee_id', isEqualTo: anneeId);
+    if (me.type == TypeCompte.secretaire || me.type == TypeCompte.doyen) {
+      if (me.faculteId == null) return;
+      q = q.where('faculte_id', isEqualTo: me.faculteId);
+    }
+    _subs.add(
+      q.snapshots().listen((s) {
+        final ids = s.docs.map((d) => d.id).toSet();
+        _wf.removeWhere((id, _) => !ids.contains(id));
+        for (final d in s.docs) {
+          final existant = _wf[d.id];
+          if (existant == null) {
+            _wf[d.id] = DossierWf.fromDoc(d.id, d.data());
+          } else {
+            existant.applyMap(d.data());
+          }
+        }
+        onHubChange();
+      }, onError: (Object e) => Notif.erreur('Lecture des dossiers : $e')),
+    );
+    _subs.add(
+      db.collection(Col.facultes).snapshots().listen((s) {
+        facultes = [
+          for (final d in s.docs) (d.data()['nom_faculte'] as String?) ?? '',
+        ]..sort();
+        notifyListeners();
+      }, onError: (Object e) => debugPrint('facultes: $e')),
+    );
+    if (me.type == TypeCompte.secretaire) {
+      _subs.add(
+        db.collection(Col.baremes).snapshots().listen((s) {
+          _taux
+            ..clear()
+            ..addEntries(
+              s.docs.map(
+                (d) => MapEntry(
+                  d.id,
+                  (d.data()['taux'] as num?)?.toDouble() ?? 0,
+                ),
+              ),
+            );
+          onHubChange();
+        }, onError: (Object e) => debugPrint('baremes: $e')),
+      );
+    }
+  }
+
+  @override
+  void rebuild() {
+    dossiers = _wf.values.toList()
+      ..sort((a, b) => b.dateInit.compareTo(a.dateInit));
+
+    final dispo = hub.cours
+        .where((c) => c.cloture && !_wf.containsKey(c.id))
+        .toList();
+    final ids = dispo.map((c) => c.id).toSet();
+    _ct.removeWhere((id, _) => !ids.contains(id));
+    for (final c in dispo) {
+      final t = _ct.putIfAbsent(c.id, () => CoursTermine(id: c.id));
+      t
+        ..code = c.code
+        ..intitule = c.intitule
+        ..promotion = c.promotionNom
+        ..faculte = secretaireFaculte
+        ..faculteId = c.faculteId
+        ..enseignant = c.enseignant
+        ..enseignantId = c.enseignantId
+        ..grade = c.grade
+        ..coursId = c.coursId
+        ..credits = c.credits
+        ..volume = c.volume
+        ..seances = c.seances
+        ..chefNom = c.chefNom
+        ..taux = _taux[c.grade] ?? 0;
+      final p = _paiement[c.enseignantId];
+      if (p != null) {
+        t
+          ..mode = p.$1
+          ..coordonnees = p.$2;
+      } else {
+        _chargerPaiement(c.enseignantId);
+      }
+    }
+    coursTermines = _ct.values.toList()..sort((a, b) => a.code.compareTo(b.code));
+  }
+
+  Future<void> _chargerPaiement(String uid) async {
+    if (uid.isEmpty || !_paiementDemande.add(uid)) return;
+    try {
+      final d = await Fb.db
+          .collection(Col.utilisateurs)
+          .doc(uid)
+          .collection(Col.paiement)
+          .doc('infos')
+          .get();
+      _paiement[uid] = (
+        (d.data()?['mode'] as String?) ?? 'Banque',
+        (d.data()?['coordonnees'] as String?) ?? '',
+      );
+      onHubChange();
+    } catch (e) {
+      debugPrint('paiement $uid: $e');
+    }
+  }
+
+  // ── Portée des autorités ──
   bool _dansPortee(RoleAutorite r, DossierWf d) =>
-      r.faculte == null || d.faculte == r.faculte;
+      r != RoleAutorite.doyen || d.faculteId == Session.instance.me?.faculteId;
 
   /// Dossiers actuellement à valider par ce rôle.
   List<DossierWf> enAttente(RoleAutorite r) => dossiers
@@ -736,14 +481,11 @@ class PaieStore extends ChangeNotifier {
   int rejetesParMoi(RoleAutorite r) =>
       traites(r).where((d) => rejeteParMoi(r, d)).length;
 
-  // ═══ Requêtes Comptabilité (palier 6) ═══
-  String get comptableNom => 'Mme Nadine Kahindo';
-
+  // ── Comptabilité ──
   List<DossierWf> get aPayer => dossiers
       .where((d) => d.palierRejet == null && d.palierCourant == 6)
       .toList();
 
-  /// Dossiers déjà traités par la Comptabilité (payés ou rejetés).
   List<DossierWf> get traitesCompta =>
       dossiers.where((d) => d.dates.containsKey(6)).toList();
 
@@ -762,12 +504,9 @@ class PaieStore extends ChangeNotifier {
 
   double get totalAPayer => aPayer.fold(0.0, (s, d) => s + d.net);
 
-  // ═══ Requêtes Secrétaire ═══
-  List<CoursTermine> get coursAInitialiser =>
-      coursTermines.where((c) => c.faculte == secretaireFaculte).toList();
-
-  List<DossierWf> get dossiersSec =>
-      dossiers.where((d) => d.faculte == secretaireFaculte).toList();
+  // ── Secrétaire ──
+  List<CoursTermine> get coursAInitialiser => coursTermines;
+  List<DossierWf> get dossiersSec => dossiers;
   List<DossierWf> get dossiersEnCircuit =>
       dossiersSec.where((d) => d.palierRejet == null).toList();
   List<DossierWf> get dossiersRejetes =>
@@ -775,99 +514,64 @@ class PaieStore extends ChangeNotifier {
   int get nbPayes =>
       dossiersSec.where((d) => d.statut == StatutDossier.paye).length;
 
-  // ═══ Actions ═══
-  void initialiser(
+  // ── Actions ──
+  Future<bool> initialiser(
     CoursTermine c, {
     required String mode,
     required String coordonnees,
     required DateTime date,
-  }) {
-    final ref = 'UCB-2026-0${_seq++}';
-    dossiers.insert(
-      0,
-      DossierWf(
-        reference: ref,
-        code: c.code,
-        intitule: c.intitule,
-        promotion: c.promotion,
-        faculte: c.faculte,
-        enseignant: c.enseignant,
-        grade: c.grade,
-        credits: c.credits,
-        volume: c.volume,
-        seances: c.seances,
-        taux: c.taux,
-        mode: mode,
-        coordonnees: coordonnees,
-        dateInit: date,
-      ),
-    );
-    coursTermines.remove(c);
-    notifyListeners();
-  }
+  }) => _repo.initialiser(
+    c,
+    mode: mode,
+    coordonnees: coordonnees,
+    date: date,
+  );
 
-  /// Secrétaire : INITIALISE → chez le Doyen.
-  void soumettre(DossierWf d) {
-    d.dates[1] = kMaintenant;
-    d.palierCourant = 2;
-    notifyListeners();
-  }
+  Future<bool> soumettre(DossierWf d) => _repo.soumettre(d);
 
-  /// Autorité : valide et passe au palier suivant.
-  void valider(DossierWf d) {
-    d.dates[d.palierCourant] = kMaintenant;
-    d.palierCourant += 1;
-    notifyListeners();
-  }
+  Future<bool> valider(DossierWf d) => _repo.valider(d);
 
-  /// Comptabilité : enregistre le règlement et clôture le dossier (PAYÉ, définitif).
-  void payer(
+  Future<bool> rejeter(DossierWf d, String motif) => _repo.rejeter(d, motif);
+
+  Future<bool> payer(
     DossierWf d, {
     required String reference,
     required DateTime date,
     required String modeReglement,
     required String bordereau,
+    String? bordereauId,
     String? imputation,
-  }) {
-    d.referencePaiement = reference;
-    d.modeReglement = modeReglement;
-    d.bordereau = bordereau;
-    d.imputation = imputation;
-    d.dates[6] = date;
-    d.palierCourant = 7;
-    notifyListeners();
-  }
+  }) => _repo.payer(
+    d,
+    reference: reference,
+    date: date,
+    modeReglement: modeReglement,
+    bordereau: bordereau,
+    bordereauId: bordereauId,
+    imputation: imputation,
+  );
 
-  /// Autorité : rejette avec motif (retour au secrétaire).
-  void rejeter(DossierWf d, String motif) {
-    d.dates[d.palierCourant] = kMaintenant;
-    d.palierRejet = d.palierCourant;
-    d.motifRejet = motif;
-    notifyListeners();
-  }
-
-  /// Secrétaire : corrige puis remet le dossier au palier qui a rejeté (règle à valider).
-  void reinitialiser(
+  Future<bool> reinitialiser(
     DossierWf d, {
     required String mode,
     required String coordonnees,
+    required List<String> pieces,
+    List<String>? piecesIds,
     String? commentaire,
-  }) {
-    final p = d.palierRejet!;
-    d.historique.add(
-      'Rejeté par le ${kActeursCourts[p - 1]} le ${fmtDate(d.dates[p] ?? kMaintenant)} : ${d.motifRejet ?? ''}'
-      '${(commentaire == null || commentaire.isEmpty) ? '' : '\nCorrection : $commentaire'}',
-    );
-    d.mode = mode;
-    d.coordonnees = coordonnees;
-    d.palierCourant = p;
-    d.palierRejet = null;
-    d.motifRejet = null;
-    d.dates.remove(p);
-    notifyListeners();
-  }
+  }) => _repo.reinitialiser(
+    d,
+    mode: mode,
+    coordonnees: coordonnees,
+    pieces: pieces,
+    piecesIds: piecesIds,
+    commentaire: commentaire,
+  );
 
-  void touch() => notifyListeners();
+  @override
+  void stop() {
+    _cancel();
+    super.stop();
+  }
 }
 
 final PaieStore paieStore = PaieStore();

@@ -66,26 +66,7 @@ class Etudiant extends StatelessWidget {
               ],
             ),
             actions: [
-              Stack(
-                children: [
-                  IconButton(
-                    onPressed: () => openNotificationsDialog(context),
-                    icon: Icon(AppIcons.notification),
-                  ),
-                  Positioned(
-                    right: 12,
-                    top: 12,
-                    child: Container(
-                      height: 5,
-                      width: 5,
-                      decoration: BoxDecoration(
-                        color: AppColors.tdError,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+              const NotifBell(),
               const SizedBox(width: 5),
               GestureDetector(
                 onTap: () => openProfileDialog(context, action),
@@ -99,7 +80,7 @@ class Etudiant extends StatelessWidget {
                   ),
                   child: Center(
                     child: Text(
-                      etudiantStore.nom.substring(0, 1),
+                      etudiantStore.initiale,
                       style: t.headlineMedium,
                     ),
                   ),

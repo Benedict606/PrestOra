@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:prestora/data/services/pdf_service.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:prestora/app/shared/styles/colors.dart';
 import 'package:prestora/app/shared/styles/icons.dart';
@@ -63,26 +64,7 @@ class _ComptabiliteState extends State<Comptabilite> {
               ],
             ),
             actions: [
-              Stack(
-                children: [
-                  IconButton(
-                    onPressed: () => openNotificationsDialog(context),
-                    icon: Icon(AppIcons.notification),
-                  ),
-                  Positioned(
-                    right: 12,
-                    top: 12,
-                    child: Container(
-                      height: 5,
-                      width: 5,
-                      decoration: BoxDecoration(
-                        color: AppColors.tdError,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+              const NotifBell(),
               const SizedBox(width: 5),
               GestureDetector(
                 onTap: () => openProfileDialog(context, action),
@@ -96,7 +78,7 @@ class _ComptabiliteState extends State<Comptabilite> {
                   ),
                   child: Center(
                     child: Text(
-                      paieStore.comptableNom.split(' ')[1].substring(0, 1),
+                      paieStore.initiale,
                       style: t.headlineMedium,
                     ),
                   ),
@@ -221,12 +203,9 @@ Widget? _barre(BuildContext context, DossierWf d) {
     return SizedBox(
       width: double.infinity,
       child: FilledButton.icon(
-        onPressed: () => paieSnack(
-          context,
-          'Quittance de ${d.reference} (PDF) : téléchargement simulé.',
-        ),
+        onPressed: () => PdfService.partagerEtat(context, d),
         icon: const Icon(Icons.receipt_long_outlined, size: 18),
-        label: const Text('Télécharger la quittance (PDF)'),
+        label: const Text("Etat de paie (PDF)"),
       ),
     );
   }
@@ -238,7 +217,7 @@ Future<void> _rejeter(BuildContext context, DossierWf d) async {
   if (motif == null || !context.mounted) return;
   final nav = Navigator.of(context);
   final messenger = ScaffoldMessenger.of(context);
-  paieStore.rejeter(d, motif);
+  if (!await paieStore.rejeter(d, motif)) return;
   nav.pop();
   messenger
     ..hideCurrentSnackBar()
@@ -602,10 +581,11 @@ class _HistoriqueState extends State<_Historique> {
                                 children: [
                                   Expanded(
                                     child: OutlinedButton.icon(
-                                      onPressed: () => paieSnack(
-                                        context,
-                                        'Fiche ${d.reference} (PDF) : téléchargement simulé.',
-                                      ),
+                                      onPressed: () =>
+                                          PdfService.partagerFicheDossier(
+                                            context,
+                                            d,
+                                          ),
                                       icon: const Icon(
                                         Icons.description_outlined,
                                         size: 18,
@@ -616,15 +596,13 @@ class _HistoriqueState extends State<_Historique> {
                                   const SizedBox(width: 12),
                                   Expanded(
                                     child: OutlinedButton.icon(
-                                      onPressed: () => paieSnack(
-                                        context,
-                                        'Quittance ${d.reference} (PDF) : téléchargement simulé.',
-                                      ),
+                                      onPressed: () =>
+                                          PdfService.partagerEtat(context, d),
                                       icon: const Icon(
                                         Icons.receipt_long_outlined,
                                         size: 18,
                                       ),
-                                      label: const Text('Quittance'),
+                                      label: const Text('Etat de paie'),
                                     ),
                                   ),
                                 ],

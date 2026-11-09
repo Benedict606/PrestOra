@@ -1,4 +1,8 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:prestora/core/notify.dart';
+import 'package:prestora/data/services/auth_service.dart';
+import 'package:prestora/data/services/session.dart';
 import 'package:prestora/app/shared/styles/images.dart';
 import 'package:prestora/app/view/payslip/accountant/comptabilite.dart';
 import 'package:prestora/app/view/payslip/authority/autorite.dart';
@@ -183,6 +187,12 @@ class _LoginState extends State<Login> {
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    _error = Session.instance.erreur; // ex. compte désactivé
+  }
+
+  @override
   void dispose() {
     _email.dispose();
     _password.dispose();
@@ -202,28 +212,43 @@ class _LoginState extends State<Login> {
     if (_eEmail != null || _ePassword != null) return;
 
     setState(() => _loading = true);
-    await Future<void>.delayed(
-      const Duration(milliseconds: 900),
-    ); // simule l'appel réseau
-    if (!mounted) return;
-
-    final account = kDemoAccounts
-        .where((a) => a.email == email && a.password == pwd)
-        .firstOrNull;
-    if (account == null) {
+    final session = Session.instance;
+    session.erreur = null;
+    try {
+      await AuthService.signIn(email, pwd);
+      // Le routeur redirige tout seul dès que le profil est chargé.
+      for (var i = 0; i < 40; i++) {
+        if (session.me != null || session.erreur != null) break;
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+      if (!mounted) return;
+      if (session.me == null) {
+        setState(() {
+          _loading = false;
+          _error = session.erreur ?? 'Connexion impossible. Réessayez.';
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = 'Email ou mot de passe incorrect.';
+        _error = Notif.humaniser(e);
       });
+    }
+  }
+
+  Future<void> _reset() async {
+    final email = _email.text.trim();
+    if (!email.contains('@')) {
+      setState(() => _eEmail = 'Saisissez votre email pour recevoir le lien');
       return;
     }
-
-    setState(() => _loading = false);
-    // Redirection selon le rôle
-    Navigator.of(
-      context,
-    ).pushReplacement(MaterialPageRoute<void>(builder: (_) => account.page));
-    // Avec go_router, utilisez plutôt :  context.go(account.route);
+    try {
+      await AuthService.resetPassword(email);
+      Notif.info('Un lien de réinitialisation a été envoyé à $email.');
+    } catch (e) {
+      Notif.erreur(e);
+    }
   }
 
   void _fill(DemoAccount a) {
@@ -369,17 +394,7 @@ class _LoginState extends State<Login> {
                             Align(
                               alignment: Alignment.centerRight,
                               child: TextButton(
-                                onPressed: _loading
-                                    ? null
-                                    : () => ScaffoldMessenger.of(context)
-                                        ..hideCurrentSnackBar()
-                                        ..showSnackBar(
-                                          const SnackBar(
-                                            content: Text(
-                                              'Un lien de réinitialisation sera envoyé par email (à brancher).',
-                                            ),
-                                          ),
-                                        ),
+                                onPressed: _loading ? null : _reset,
                                 child: const Text('Mot de passe oublié ?'),
                               ),
                             ),
@@ -447,54 +462,6 @@ class _LoginState extends State<Login> {
                     ),
 
                     const SizedBox(height: 32),
-
-                    // ── Comptes de démonstration ──
-                    Row(
-                      children: [
-                        const Expanded(child: Divider()),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          child: Text('COMPTES DE DÉMO', style: t.labelSmall),
-                        ),
-                        const Expanded(child: Divider()),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    for (
-                      int i = 0;
-                      i < kDemoAccounts.length;
-                      i += itemsPerRow
-                    ) ...[
-                      Row(
-                        children: [
-                          for (
-                            int j = i;
-                            j < i + itemsPerRow && j < kDemoAccounts.length;
-                            j++
-                          ) ...[
-                            Expanded(
-                              child: _DemoTile(
-                                account: kDemoAccounts[j],
-                                selected: _email.text == kDemoAccounts[j].email,
-                                onTap: _loading
-                                    ? null
-                                    : () => _fill(kDemoAccounts[j]),
-                              ),
-                            ),
-                            if (j < i + itemsPerRow - 1 &&
-                                j < kDemoAccounts.length - 1)
-                              const SizedBox(width: 12),
-                          ],
-
-                          // Remplit la dernière ligne si elle est incomplète
-                          if ((kDemoAccounts.length - i) == 1)
-                            const Expanded(child: SizedBox()),
-                        ],
-                      ),
-                      if (i + itemsPerRow < kDemoAccounts.length)
-                        const SizedBox(height: 12),
-                    ],
-                    const SizedBox(height: 16),
                   ],
                 ),
               ),

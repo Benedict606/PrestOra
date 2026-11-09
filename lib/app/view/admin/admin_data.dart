@@ -1,9 +1,15 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
+import 'package:prestora/core/notify.dart';
+import 'package:prestora/data/firebase/fb.dart';
+import 'package:prestora/data/services/session.dart';
 
 // ═══════════════════════════════════════════════════════════════
-//  Modèles + données fictives de l'espace Administrateur.
-//  AdminStore joue le rôle de "faux dépôt" : il sera remplacé par
-//  vos Cubits / repositories (Firebase) plus tard.
+//  Modèles + dépôt de l'espace Administrateur (Firestore).
+//  AdminStore garde la même interface qu'avant (listes + méthodes),
+//  mais ses données viennent maintenant de Firestore en temps réel.
 // ═══════════════════════════════════════════════════════════════
 
 const kGrades = <String>[
@@ -23,19 +29,29 @@ String fmtTaux(double v) => '${v.toStringAsFixed(v % 1 == 0 ? 0 : 2)} \$/h';
 
 // ───────────────────────── Types de compte ─────────────────────────
 enum TypeCompte {
-  chefPromotion('Chef de promotion'),
-  encadreur('Encadreur pédagogique'),
-  enseignant('Enseignant visiteur'),
-  secretaire('Secrétaire de faculté'),
-  doyen('Doyen'),
-  vra('Vice-recteur académique'),
-  recteur('Recteur'),
-  ag('Administrateur général'),
-  comptabilite('Comptabilité'),
-  administrateur('Administrateur système');
+  chefPromotion('Chef de promotion', 'CHEF_PROMOTION'),
+  encadreur('Encadreur pédagogique', 'ENCADREUR'),
+  enseignant('Enseignant visiteur', 'ENSEIGNANT'),
+  secretaire('Secrétaire de faculté', 'SECRETAIRE'),
+  doyen('Doyen', 'DOYEN'),
+  vra('Vice-recteur académique', 'VRA'),
+  recteur('Recteur', 'RECTEUR'),
+  ag('Administrateur général', 'AG'),
+  comptabilite('Comptabilité', 'COMPTABILITE'),
+  administrateur('Administrateur système', 'ADMIN');
 
-  const TypeCompte(this.label);
+  const TypeCompte(this.label, this.code);
   final String label;
+
+  /// Valeur stockée dans Firestore (`type_utilisateur`).
+  final String code;
+
+  static TypeCompte? fromCode(String? c) {
+    for (final t in TypeCompte.values) {
+      if (t.code == c) return t;
+    }
+    return null;
+  }
 
   /// Rôles globaux : aucune faculté associée.
   bool get isGlobal => const [
@@ -62,26 +78,32 @@ class Compte {
     this.telephone = '',
     this.faculte,
     this.promotion,
+    this.faculteId,
+    this.promotionId,
     this.grade,
     this.institution,
     this.modePaiement,
     this.coordonneesPaiement,
     this.actif = true,
+    this.gereAnnees = false,
   });
 
-  final String id;
+  final String id; // = uid Firebase Auth
   String nom;
   String email;
   String titre;
   String telephone;
   TypeCompte type;
-  String? faculte;
-  String? promotion;
+  String? faculte; // nom (résolu depuis faculteId)
+  String? promotion; // nom (résolu depuis promotionId)
+  String? faculteId;
+  String? promotionId;
   String? grade;
   String? institution;
-  String? modePaiement; // « Banque » ou « Mobile Money »
+  String? modePaiement; // « Banque » ou « Mobile Money » (sous-collection)
   String? coordonneesPaiement;
   bool actif;
+  bool gereAnnees; // peut_gerer_annees
 
   String get nomComplet => titre.isEmpty ? nom : '$titre $nom';
 
@@ -91,29 +113,89 @@ class Compte {
     final b = parts.length > 1 && parts.last.isNotEmpty ? parts.last[0] : '';
     return (a + b).toUpperCase();
   }
+
+  /// Met à jour cet objet depuis un document (identité d'objet conservée).
+  void applyMap(Map<String, dynamic> m) {
+    nom = (m['nom'] as String?) ?? '';
+    email = (m['email'] as String?) ?? '';
+    titre = (m['titre'] as String?) ?? '';
+    telephone = (m['telephone'] as String?) ?? '';
+    type = TypeCompte.fromCode(m['type_utilisateur'] as String?) ?? type;
+    faculteId = m['faculte_id'] as String?;
+    promotionId = m['promotion_id'] as String?;
+    grade = m['grade_statutaire'] as String?;
+    institution = m['institution_origine'] as String?;
+    actif = m['est_actif'] == true;
+    gereAnnees = m['peut_gerer_annees'] == true;
+  }
+
+  factory Compte.fromMap(String id, Map<String, dynamic> m) {
+    final c = Compte(
+      id: id,
+      nom: '',
+      email: '',
+      type:
+          TypeCompte.fromCode(m['type_utilisateur'] as String?) ??
+          TypeCompte.enseignant,
+    );
+    c.applyMap(m);
+    return c;
+  }
+
+  Map<String, dynamic> toMap() => {
+    'nom': nom,
+    'email': email,
+    'titre': titre,
+    'telephone': telephone,
+    'type_utilisateur': type.code,
+    'est_actif': actif,
+    'faculte_id': type.needsFaculte ? faculteId : null,
+    'promotion_id': type.needsPromotion ? promotionId : null,
+    'grade_statutaire': type.isEnseignant ? grade : null,
+    'institution_origine': type.isEnseignant ? institution : null,
+    'peut_gerer_annees': gereAnnees,
+  };
 }
 
 class Promotion {
-  Promotion({required this.nom, this.chef, this.nbCours = 0});
+  Promotion({
+    this.id = '',
+    required this.nom,
+    this.chef,
+    this.nbCours = 0,
+    this.faculteId = '',
+    this.departementId = '',
+  });
+  final String id;
   String nom;
   String? chef;
   int nbCours;
+  String faculteId;
+  String departementId;
 }
 
 class Departement {
-  Departement({required this.nom, List<Promotion>? promotions})
-    : promotions = promotions ?? [];
+  Departement({
+    this.id = '',
+    required this.nom,
+    List<Promotion>? promotions,
+    this.faculteId = '',
+  }) : promotions = promotions ?? [];
+  final String id;
   String nom;
+  String faculteId;
   final List<Promotion> promotions;
 }
 
 class Faculte {
   Faculte({
+    this.id = '',
     required this.nom,
     required this.departements,
     this.doyen,
     this.secretaire,
   });
+  final String id;
   String nom;
   String? doyen;
   String? secretaire;
@@ -125,6 +207,7 @@ class Faculte {
 
 class Cours {
   Cours({
+    this.id = '',
     required this.code,
     required this.intitule,
     required this.faculte,
@@ -132,14 +215,19 @@ class Cours {
     required this.credits,
     required this.volume,
     this.affecte = false,
+    this.faculteId = '',
+    this.promotionId = '',
   });
+  final String id;
   String code;
   String intitule;
-  String faculte;
-  String promotion;
+  String faculte; // nom
+  String promotion; // nom
+  String faculteId;
+  String promotionId;
   int credits;
   int volume;
-  bool affecte;
+  bool affecte; // vrai si suivi dans l'année active
 }
 
 class Bareme {
@@ -148,380 +236,266 @@ class Bareme {
   double taux;
 }
 
-// ───────────────────────── Faux dépôt ─────────────────────────
+// ───────────────────────── Dépôt Firestore ─────────────────────────
 class AdminStore extends ChangeNotifier {
   /// Compte connecté (ne peut pas se désactiver lui-même).
-  final String currentUserId = 'c15';
+  String get currentUserId => Session.instance.me?.id ?? '';
 
   double? retenueFiscale; // % : « À définir » tant que null
 
-  final List<String> historiqueBaremes = [
-    '05/10/2026 · Professeur Ordinaire : 11 → 12 \$/h',
-    '05/10/2026 · Professeur : 10 → 11 \$/h',
-    '12/09/2026 · Création du barème initial (5 grades)',
-  ];
-
-  final List<Compte> comptes = [
-    Compte(
-      id: 'c01',
-      titre: 'Pr',
-      nom: 'Aimé Cirimwami',
-      email: 'a.cirimwami@exemple.org',
-      type: TypeCompte.enseignant,
-      faculte: 'Sciences et Technologies',
-      grade: 'Professeur Ordinaire',
-      institution: 'Université de Kinshasa',
-      modePaiement: 'Banque',
-      coordonneesPaiement: 'Banque Centrale · 0012-3456-7890',
-      telephone: '+243 990 000 001',
-    ),
-    Compte(
-      id: 'c02',
-      titre: 'Dr',
-      nom: 'Grâce Bahati',
-      email: 'g.bahati@exemple.org',
-      type: TypeCompte.enseignant,
-      faculte: 'Sciences et Technologies',
-      grade: 'Chef de Travaux',
-      institution: 'ULPGL Goma',
-      modePaiement: 'Mobile Money',
-      coordonneesPaiement: '0990 000 002',
-      telephone: '+243 990 000 002',
-    ),
-    Compte(
-      id: 'c03',
-      titre: 'Pr',
-      nom: 'Joseph Mushagalusa',
-      email: 'j.mushagalusa@exemple.org',
-      type: TypeCompte.enseignant,
-      faculte: 'Droit',
-      grade: 'Professeur',
-      institution: 'Université Officielle de Bukavu',
-      modePaiement: 'Banque',
-      coordonneesPaiement: 'Rawbank · 0045-7788-1200',
-      telephone: '+243 990 000 003',
-    ),
-    Compte(
-      id: 'c04',
-      titre: 'Dr',
-      nom: 'Esther Namwira',
-      email: 'e.namwira@exemple.org',
-      type: TypeCompte.enseignant,
-      faculte: 'Droit',
-      grade: 'Professeur Associé',
-      institution: 'Université de Lubumbashi',
-      modePaiement: 'Mobile Money',
-      coordonneesPaiement: '0990 000 004',
-      telephone: '+243 990 000 004',
-    ),
-    Compte(
-      id: 'c05',
-      titre: 'M.',
-      nom: 'David Safari',
-      email: 'd.safari@exemple.org',
-      type: TypeCompte.enseignant,
-      faculte: 'Économie et Gestion',
-      grade: 'Assistant',
-      institution: 'ISP Bukavu',
-      modePaiement: 'Banque',
-      coordonneesPaiement: 'Equity · 3300-1122-45',
-      actif: false,
-    ),
-    Compte(
-      id: 'c06',
-      nom: 'Patrick Bisimwa',
-      email: 'p.bisimwa@exemple.org',
-      type: TypeCompte.chefPromotion,
-      faculte: 'Sciences et Technologies',
-      promotion: 'L2 Informatique',
-    ),
-    Compte(
-      id: 'c07',
-      nom: 'Christelle Mapendo',
-      email: 'c.mapendo@exemple.org',
-      type: TypeCompte.chefPromotion,
-      faculte: 'Droit',
-      promotion: 'L1 Droit',
-    ),
-    Compte(
-      id: 'c08',
-      titre: 'Dr',
-      nom: 'Olivier Kabano',
-      email: 'o.kabano@exemple.org',
-      type: TypeCompte.encadreur,
-      faculte: 'Sciences et Technologies',
-    ),
-    Compte(
-      id: 'c09',
-      titre: 'Mme',
-      nom: 'Rachel Zawadi',
-      email: 'r.zawadi@exemple.org',
-      type: TypeCompte.secretaire,
-      faculte: 'Sciences et Technologies',
-    ),
-    Compte(
-      id: 'c10',
-      titre: 'Pr',
-      nom: 'Fidèle Bashige',
-      email: 'f.bashige@exemple.org',
-      type: TypeCompte.doyen,
-      faculte: 'Sciences et Technologies',
-    ),
-    Compte(
-      id: 'c11',
-      titre: 'Pr',
-      nom: 'Claire Mukamba',
-      email: 'c.mukamba@exemple.org',
-      type: TypeCompte.vra,
-    ),
-    Compte(
-      id: 'c12',
-      titre: 'Pr',
-      nom: 'Samuel Kasereka',
-      email: 's.kasereka@exemple.org',
-      type: TypeCompte.recteur,
-    ),
-    Compte(
-      id: 'c13',
-      titre: 'M.',
-      nom: 'Jonathan Mwamba',
-      email: 'j.mwamba@exemple.org',
-      type: TypeCompte.ag,
-    ),
-    Compte(
-      id: 'c14',
-      titre: 'Mme',
-      nom: 'Nadine Kahindo',
-      email: 'n.kahindo@exemple.org',
-      type: TypeCompte.comptabilite,
-    ),
-    Compte(
-      id: 'c15',
-      nom: 'Léa Murhula',
-      email: 'l.murhula@exemple.org',
-      type: TypeCompte.administrateur,
-    ),
-  ];
-
-  final List<Faculte> facultes = [
-    Faculte(
-      nom: 'Sciences et Technologies',
-      doyen: 'Pr Fidèle Bashige',
-      secretaire: 'Mme Rachel Zawadi',
-      departements: [
-        Departement(
-          nom: 'Informatique',
-          promotions: [
-            Promotion(
-              nom: 'L1 Informatique',
-              chef: 'Aline Kitumaini',
-              nbCours: 2,
-            ),
-            Promotion(
-              nom: 'L2 Informatique',
-              chef: 'Patrick Bisimwa',
-              nbCours: 1,
-            ),
-            Promotion(nom: 'L3 Informatique', nbCours: 1),
-          ],
-        ),
-        Departement(
-          nom: 'Mathématiques',
-          promotions: [
-            Promotion(
-              nom: 'L1 Mathématiques',
-              chef: 'Jean Bulonza',
-              nbCours: 1,
-            ),
-          ],
-        ),
-      ],
-    ),
-    Faculte(
-      nom: 'Droit',
-      doyen: 'Pr Béatrice Cikuru',
-      secretaire: 'M. Gustave Namega',
-      departements: [
-        Departement(
-          nom: 'Droit privé',
-          promotions: [
-            Promotion(nom: 'L1 Droit', chef: 'Christelle Mapendo', nbCours: 1),
-            Promotion(nom: 'L2 Droit', nbCours: 1),
-          ],
-        ),
-        Departement(
-          nom: 'Droit public',
-          promotions: [
-            Promotion(nom: 'L3 Droit public', chef: 'Éric Cishugi', nbCours: 1),
-          ],
-        ),
-      ],
-    ),
-    Faculte(
-      nom: 'Économie et Gestion',
-      doyen: 'Pr Hélène Lwango',
-      secretaire: 'Mme Sylvie Mwanvua',
-      departements: [
-        Departement(
-          nom: 'Gestion',
-          promotions: [
-            Promotion(nom: 'L1 Gestion', chef: 'Sarah Nabintu', nbCours: 1),
-            Promotion(nom: 'L2 Gestion', nbCours: 1),
-          ],
-        ),
-        Departement(
-          nom: 'Économie',
-          promotions: [
-            Promotion(nom: 'L1 Économie', chef: 'Moïse Lwango', nbCours: 1),
-          ],
-        ),
-      ],
-    ),
-    Faculte(
-      nom: 'Médecine',
-      doyen: 'Pr Désiré Bahizire',
-      secretaire: 'Mme Pauline Chimanuka',
-      departements: [
-        Departement(
-          nom: 'Santé publique',
-          promotions: [
-            Promotion(
-              nom: 'L1 Santé publique',
-              chef: 'Bénie Aksanti',
-              nbCours: 1,
-            ),
-          ],
-        ),
-        Departement(
-          nom: 'Médecine générale',
-          promotions: [Promotion(nom: 'L2 Médecine', nbCours: 1)],
-        ),
-      ],
-    ),
-  ];
-
-  final List<Cours> cours = [
-    Cours(
-      code: 'INF101',
-      intitule: "Introduction à l'algorithmique",
-      faculte: 'Sciences et Technologies',
-      promotion: 'L1 Informatique',
-      credits: 4,
-      volume: 30,
-      affecte: true,
-    ),
-    Cours(
-      code: 'INF102',
-      intitule: 'Architecture des ordinateurs',
-      faculte: 'Sciences et Technologies',
-      promotion: 'L1 Informatique',
-      credits: 3,
-      volume: 30,
-    ),
-    Cours(
-      code: 'INF204',
-      intitule: 'Bases de données relationnelles',
-      faculte: 'Sciences et Technologies',
-      promotion: 'L2 Informatique',
-      credits: 5,
-      volume: 45,
-      affecte: true,
-    ),
-    Cours(
-      code: 'INF305',
-      intitule: 'Génie logiciel',
-      faculte: 'Sciences et Technologies',
-      promotion: 'L3 Informatique',
-      credits: 4,
-      volume: 30,
-    ),
-    Cours(
-      code: 'MAT101',
-      intitule: 'Analyse mathématique I',
-      faculte: 'Sciences et Technologies',
-      promotion: 'L1 Mathématiques',
-      credits: 6,
-      volume: 60,
-      affecte: true,
-    ),
-    Cours(
-      code: 'DRT110',
-      intitule: 'Introduction au droit civil',
-      faculte: 'Droit',
-      promotion: 'L1 Droit',
-      credits: 4,
-      volume: 30,
-      affecte: true,
-    ),
-    Cours(
-      code: 'DRT215',
-      intitule: 'Procédure pénale',
-      faculte: 'Droit',
-      promotion: 'L2 Droit',
-      credits: 3,
-      volume: 30,
-    ),
-    Cours(
-      code: 'DRT320',
-      intitule: 'Droit international public',
-      faculte: 'Droit',
-      promotion: 'L3 Droit public',
-      credits: 4,
-      volume: 45,
-      affecte: true,
-    ),
-    Cours(
-      code: 'ECO120',
-      intitule: 'Microéconomie',
-      faculte: 'Économie et Gestion',
-      promotion: 'L1 Économie',
-      credits: 5,
-      volume: 45,
-      affecte: true,
-    ),
-    Cours(
-      code: 'GES130',
-      intitule: 'Comptabilité générale',
-      faculte: 'Économie et Gestion',
-      promotion: 'L1 Gestion',
-      credits: 5,
-      volume: 45,
-    ),
-    Cours(
-      code: 'GES240',
-      intitule: 'Management des organisations',
-      faculte: 'Économie et Gestion',
-      promotion: 'L2 Gestion',
-      credits: 4,
-      volume: 30,
-      affecte: true,
-    ),
-    Cours(
-      code: 'SPB110',
-      intitule: 'Épidémiologie générale',
-      faculte: 'Médecine',
-      promotion: 'L1 Santé publique',
-      credits: 3,
-      volume: 30,
-    ),
-    Cours(
-      code: 'MED210',
-      intitule: 'Anatomie descriptive',
-      faculte: 'Médecine',
-      promotion: 'L2 Médecine',
-      credits: 6,
-      volume: 60,
-      affecte: true,
-    ),
-  ];
-
+  final List<String> historiqueBaremes = [];
+  final List<Compte> comptes = [];
+  final List<Faculte> facultes = [];
+  final List<Cours> cours = [];
   final List<Bareme> baremes = [
-    Bareme(grade: 'Assistant', taux: 6),
-    Bareme(grade: 'Chef de Travaux', taux: 8),
-    Bareme(grade: 'Professeur Associé', taux: 10),
-    Bareme(grade: 'Professeur', taux: 11),
-    Bareme(grade: 'Professeur Ordinaire', taux: 12),
+    for (final g in kGrades) Bareme(grade: g, taux: 0),
   ];
+
+  bool loaded = false;
+
+  // Objets stables (identité conservée entre deux snapshots).
+  final _fObj = <String, Faculte>{};
+  final _dObj = <String, Departement>{};
+  final _pObj = <String, Promotion>{};
+  final _cObj = <String, Cours>{};
+  final _uObj = <String, Compte>{};
+
+  // Documents bruts du dernier snapshot de chaque collection.
+  Map<String, Map<String, dynamic>> _rFac = {};
+  Map<String, Map<String, dynamic>> _rDep = {};
+  Map<String, Map<String, dynamic>> _rPro = {};
+  Map<String, Map<String, dynamic>> _rCou = {};
+  Map<String, Map<String, dynamic>> _rUsr = {};
+  Map<String, Map<String, dynamic>> _rBar = {};
+  final Set<String> _affectes = {};
+
+  final List<StreamSubscription<dynamic>> _subs = [];
+  StreamSubscription<dynamic>? _sessSub;
+  String? _sessAnnee;
+  bool _started = false;
+
+  FirebaseFirestore get _db => Fb.db;
+
+  // ───────────── Cycle de vie ─────────────
+  void start() {
+    if (_started) return;
+    _started = true;
+
+    void listen(
+      String col,
+      void Function(Map<String, Map<String, dynamic>>) assign,
+    ) {
+      _subs.add(
+        _db
+            .collection(col)
+            .snapshots()
+            .listen(
+              (s) {
+                assign({for (final d in s.docs) d.id: d.data()});
+                _rebuild();
+              },
+              onError: (Object e) => Notif.erreur('Lecture de $col : $e'),
+            ),
+      );
+    }
+
+    listen(Col.facultes, (m) => _rFac = m);
+    listen(Col.departements, (m) => _rDep = m);
+    listen(Col.promotions, (m) => _rPro = m);
+    listen(Col.cours, (m) => _rCou = m);
+    listen(Col.utilisateurs, (m) => _rUsr = m);
+    listen(Col.baremes, (m) => _rBar = m);
+
+    _subs.add(
+      _db
+          .collection(Col.parametres)
+          .doc('retenue_fiscale')
+          .snapshots()
+          .listen((d) {
+            retenueFiscale = (d.data()?['pourcentage'] as num?)?.toDouble();
+            notifyListeners();
+          }, onError: (Object e) => debugPrint('retenue: $e')),
+    );
+
+    Session.instance.addListener(_onSession);
+    _onSession();
+  }
+
+  void stop() {
+    if (!_started) return;
+    _started = false;
+    for (final s in _subs) {
+      s.cancel();
+    }
+    _subs.clear();
+    _sessSub?.cancel();
+    _sessSub = null;
+    _sessAnnee = null;
+    Session.instance.removeListener(_onSession);
+    comptes.clear();
+    facultes.clear();
+    cours.clear();
+    _fObj.clear();
+    _dObj.clear();
+    _pObj.clear();
+    _cObj.clear();
+    _uObj.clear();
+    loaded = false;
+    notifyListeners();
+  }
+
+  void _onSession() {
+    final id = Session.instance.active?.id;
+    if (id == _sessAnnee) return;
+    _sessAnnee = id;
+    _sessSub?.cancel();
+    _sessSub = null;
+    _affectes.clear();
+    if (id == null) {
+      _rebuild();
+      return;
+    }
+    _sessSub = _db
+        .collection(Col.sessions)
+        .where('annee_id', isEqualTo: id)
+        .snapshots()
+        .listen((s) {
+          _affectes
+            ..clear()
+            ..addAll(
+              s.docs.map((d) => (d.data()['cours_id'] as String?) ?? ''),
+            );
+          _rebuild();
+        }, onError: (Object e) => debugPrint('sessions: $e'));
+  }
+
+  // ───────────── Reconstruction des objets ─────────────
+  void _rebuild() {
+    // Facultés
+    _fObj.removeWhere((id, _) => !_rFac.containsKey(id));
+    for (final e in _rFac.entries) {
+      final f = _fObj.putIfAbsent(
+        e.key,
+        () => Faculte(id: e.key, nom: '', departements: []),
+      );
+      f.nom = (e.value['nom_faculte'] as String?) ?? '';
+      f.departements.clear();
+    }
+    // Départements
+    _dObj.removeWhere((id, _) => !_rDep.containsKey(id));
+    for (final e in _rDep.entries) {
+      final d = _dObj.putIfAbsent(e.key, () => Departement(id: e.key, nom: ''));
+      d.nom = (e.value['nom'] as String?) ?? '';
+      d.faculteId = (e.value['faculte_id'] as String?) ?? '';
+      d.promotions.clear();
+    }
+    // Promotions
+    _pObj.removeWhere((id, _) => !_rPro.containsKey(id));
+    for (final e in _rPro.entries) {
+      final p = _pObj.putIfAbsent(e.key, () => Promotion(id: e.key, nom: ''));
+      p.nom = (e.value['nom'] as String?) ?? '';
+      p.faculteId = (e.value['faculte_id'] as String?) ?? '';
+      p.departementId = (e.value['departement_id'] as String?) ?? '';
+      p.chef = null;
+      p.nbCours = 0;
+      _dObj[p.departementId]?.promotions.add(p);
+    }
+    for (final d in _dObj.values) {
+      d.promotions.sort((a, b) => a.nom.compareTo(b.nom));
+      _fObj[d.faculteId]?.departements.add(d);
+    }
+    for (final f in _fObj.values) {
+      f.departements.sort((a, b) => a.nom.compareTo(b.nom));
+      f.doyen = null;
+      f.secretaire = null;
+    }
+
+    // Comptes
+    _uObj.removeWhere((id, _) => !_rUsr.containsKey(id));
+    for (final e in _rUsr.entries) {
+      final c = _uObj.putIfAbsent(
+        e.key,
+        () => Compte.fromMap(e.key, e.value),
+      );
+      c.applyMap(e.value);
+      c.faculte = _fObj[c.faculteId]?.nom;
+      c.promotion = _pObj[c.promotionId]?.nom;
+      if (c.actif) {
+        if (c.type == TypeCompte.chefPromotion) {
+          _pObj[c.promotionId]?.chef = c.nom;
+        } else if (c.type == TypeCompte.doyen) {
+          _fObj[c.faculteId]?.doyen = c.nomComplet;
+        } else if (c.type == TypeCompte.secretaire) {
+          _fObj[c.faculteId]?.secretaire = c.nomComplet;
+        }
+      }
+    }
+
+    // Cours
+    _cObj.removeWhere((id, _) => !_rCou.containsKey(id));
+    for (final e in _rCou.entries) {
+      if (e.value['est_archive'] == true) {
+        _cObj.remove(e.key);
+        continue;
+      }
+      final c = _cObj.putIfAbsent(
+        e.key,
+        () => Cours(
+          id: e.key,
+          code: '',
+          intitule: '',
+          faculte: '',
+          promotion: '',
+          credits: 0,
+          volume: 0,
+        ),
+      );
+      c.code = (e.value['code_cours'] as String?) ?? e.key;
+      c.intitule = (e.value['intitule_exact'] as String?) ?? '';
+      c.credits = (e.value['credits'] as num?)?.toInt() ?? 0;
+      c.volume = (e.value['volume_horaire_max'] as num?)?.toInt() ?? 0;
+      c.faculteId = (e.value['faculte_id'] as String?) ?? '';
+      c.promotionId = (e.value['promotion_id'] as String?) ?? '';
+      c.faculte = _fObj[c.faculteId]?.nom ?? '';
+      c.promotion = _pObj[c.promotionId]?.nom ?? '';
+      c.affecte = _affectes.contains(c.id);
+      final p = _pObj[c.promotionId];
+      if (p != null) p.nbCours++;
+    }
+
+    // Barèmes
+    final histo = <(DateTime, String)>[];
+    for (final b in baremes) {
+      final raw = _rBar[b.grade];
+      b.taux = (raw?['taux'] as num?)?.toDouble() ?? 0;
+      for (final h in (raw?['historique'] as List?) ?? const []) {
+        if (h is Map) {
+          histo.add((
+            Fb.date(h['date']) ?? DateTime(2000),
+            (h['texte'] as String?) ?? '',
+          ));
+        }
+      }
+    }
+    histo.sort((a, b) => b.$1.compareTo(a.$1));
+    historiqueBaremes
+      ..clear()
+      ..addAll(histo.map((h) => h.$2));
+
+    // Listes publiques triées
+    facultes
+      ..clear()
+      ..addAll(_fObj.values.toList()..sort((a, b) => a.nom.compareTo(b.nom)));
+    comptes
+      ..clear()
+      ..addAll(_uObj.values.toList()..sort((a, b) => a.nom.compareTo(b.nom)));
+    cours
+      ..clear()
+      ..addAll(_cObj.values.toList()..sort((a, b) => a.code.compareTo(b.code)));
+
+    loaded = true;
+    notifyListeners();
+  }
 
   // ── Compteurs du hub ──
   int get comptesActifs => comptes.where((c) => c.actif).length;
@@ -537,53 +511,162 @@ class AdminStore extends ChangeNotifier {
   int coursOf(String faculteNom) =>
       cours.where((c) => c.faculte == faculteNom).length;
 
-  // ── Actions (déclenchent la mise à jour de l'interface) ──
-  void toggleCompte(Compte c) {
-    c.actif = !c.actif;
-    notifyListeners();
+  Faculte? faculteByNom(String? nom) =>
+      facultes.where((f) => f.nom == nom).firstOrNull;
+
+  Promotion? promotionByNom(String? faculteNom, String? nom) =>
+      faculteByNom(faculteNom)?.promotions.where((p) => p.nom == nom).firstOrNull;
+
+  // ───────────── Écritures ─────────────
+  /// Exécute une écriture ; affiche l'erreur et retourne false en cas d'échec.
+  Future<bool> _w(Future<dynamic> Function() f) async {
+    try {
+      await f();
+      return true;
+    } catch (e) {
+      Notif.erreur(e);
+      return false;
+    }
   }
 
-  void addCompte(Compte c) {
-    comptes.insert(0, c);
-    notifyListeners();
+  Future<bool> toggleCompte(Compte c) =>
+      _w(() => _db.collection(Col.utilisateurs).doc(c.id).update({
+            'est_actif': !c.actif,
+          }));
+
+  /// Résout faculte/promotion (noms) en identifiants avant l'enregistrement.
+  void _resoudreIds(Compte c) {
+    c.faculteId = c.type.needsFaculte ? faculteByNom(c.faculte)?.id : null;
+    c.promotionId = c.type.needsPromotion
+        ? promotionByNom(c.faculte, c.promotion)?.id
+        : null;
   }
 
-  void touch() => notifyListeners(); // après modification d'un objet existant
+  /// Crée le profil d'un compte dont l'utilisateur Auth existe déjà.
+  Future<bool> createCompte(Compte c) => _w(() async {
+        _resoudreIds(c);
+        await _db.collection(Col.utilisateurs).doc(c.id).set({
+          ...c.toMap(),
+          'cree_le': FieldValue.serverTimestamp(),
+        });
+        await _savePaiement(c);
+      });
 
-  void addFaculte(String nom) {
-    facultes.add(Faculte(nom: nom, departements: []));
-    notifyListeners();
+  Future<bool> saveCompte(Compte c) => _w(() async {
+        _resoudreIds(c);
+        await _db.collection(Col.utilisateurs).doc(c.id).update(c.toMap());
+        await _savePaiement(c);
+      });
+
+  Future<void> _savePaiement(Compte c) async {
+    final ref = _db
+        .collection(Col.utilisateurs)
+        .doc(c.id)
+        .collection(Col.paiement)
+        .doc('infos');
+    if (c.type.isEnseignant) {
+      await ref.set({
+        'mode': c.modePaiement,
+        'coordonnees': c.coordonneesPaiement,
+      });
+    }
   }
 
-  void addDepartement(Faculte f, String nom) {
-    f.departements.add(Departement(nom: nom));
-    notifyListeners();
+  /// Charge les coordonnées de paiement (sous-collection protégée).
+  Future<void> chargerPaiement(Compte c) async {
+    if (!c.type.isEnseignant) return;
+    try {
+      final d = await _db
+          .collection(Col.utilisateurs)
+          .doc(c.id)
+          .collection(Col.paiement)
+          .doc('infos')
+          .get();
+      c.modePaiement = d.data()?['mode'] as String?;
+      c.coordonneesPaiement = d.data()?['coordonnees'] as String?;
+    } catch (e) {
+      debugPrint('paiement: $e');
+    }
   }
 
-  void addPromotion(Departement d, String nom) {
-    d.promotions.add(Promotion(nom: nom));
-    notifyListeners();
+  void touch() => notifyListeners();
+
+  Future<bool> addFaculte(String nom) => _w(
+        () => _db.collection(Col.facultes).add({
+          'nom_faculte': nom,
+          'cree_le': FieldValue.serverTimestamp(),
+        }),
+      );
+
+  Future<bool> saveFaculte(Faculte f) => _w(
+        () => _db.collection(Col.facultes).doc(f.id).update({
+          'nom_faculte': f.nom,
+        }),
+      );
+
+  Future<bool> addDepartement(Faculte f, String nom) => _w(
+        () => _db.collection(Col.departements).add({
+          'faculte_id': f.id,
+          'nom': nom,
+        }),
+      );
+
+  Future<bool> addPromotion(Departement d, String nom) => _w(
+        () => _db.collection(Col.promotions).add({
+          'faculte_id': d.faculteId,
+          'departement_id': d.id,
+          'nom': nom,
+        }),
+      );
+
+  Map<String, dynamic> _coursMap(Cours c) {
+    c.faculteId = faculteByNom(c.faculte)?.id ?? '';
+    c.promotionId = promotionByNom(c.faculte, c.promotion)?.id ?? '';
+    return {
+      'code_cours': c.code,
+      'intitule_exact': c.intitule,
+      'credits': c.credits,
+      'volume_horaire_max': c.volume,
+      'faculte_id': c.faculteId,
+      'faculte_nom': c.faculte,
+      'promotion_id': c.promotionId,
+      'promotion_nom': c.promotion,
+      'est_archive': false,
+    };
   }
 
-  void addCours(Cours c) {
-    cours.insert(0, c);
-    notifyListeners();
-  }
+  Future<bool> addCours(Cours c) => _w(
+        () => _db.collection(Col.cours).doc(slug(c.code)).set({
+          ..._coursMap(c),
+          'cree_le': FieldValue.serverTimestamp(),
+        }),
+      );
 
-  void setTaux(Bareme b, double nouveau, DateTime effet) {
-    historiqueBaremes.insert(
-      0,
-      '${fmtDate(effet)} · ${b.grade} : ${b.taux.toStringAsFixed(b.taux % 1 == 0 ? 0 : 2)} → ${nouveau.toStringAsFixed(nouveau % 1 == 0 ? 0 : 2)} \$/h',
-    );
-    b.taux = nouveau;
-    notifyListeners();
-  }
+  Future<bool> saveCours(Cours c) => _w(
+        () => _db.collection(Col.cours).doc(c.id).update(_coursMap(c)),
+      );
 
-  void setRetenue(double v) {
-    retenueFiscale = v;
-    notifyListeners();
-  }
+  Future<bool> setTaux(Bareme b, double nouveau, DateTime effet) => _w(() async {
+        final avant = b.taux.toStringAsFixed(b.taux % 1 == 0 ? 0 : 2);
+        final apres = nouveau.toStringAsFixed(nouveau % 1 == 0 ? 0 : 2);
+        final texte = '${fmtDate(effet)} · ${b.grade} : $avant → $apres \$/h';
+        await _db.collection(Col.baremes).doc(b.grade).set({
+          'grade_statutaire': b.grade,
+          'taux': nouveau,
+          'date_effet': Fb.ts(effet),
+          'historique': FieldValue.arrayUnion([
+            {'date': Timestamp.now(), 'texte': texte},
+          ]),
+        }, SetOptions(merge: true));
+      });
+
+  Future<bool> setRetenue(double v) => _w(
+        () => _db.collection(Col.parametres).doc('retenue_fiscale').set({
+          'pourcentage': v,
+          'date_effet': Timestamp.now(),
+        }),
+      );
 }
 
-/// Instance unique pour la démo.
+/// Instance unique.
 final AdminStore adminStore = AdminStore();

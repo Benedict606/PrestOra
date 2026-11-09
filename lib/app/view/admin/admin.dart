@@ -1,11 +1,17 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:prestora/core/notify.dart';
+import 'package:prestora/data/seed/demo_seed.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:prestora/app/shared/styles/colors.dart';
 import 'package:prestora/app/shared/styles/icons.dart';
 import 'package:prestora/app/shared/styles/images.dart';
 import 'package:prestora/controller/cubit/cubit.dart';
 import 'package:prestora/controller/state/state.dart';
+import 'package:prestora/data/services/session.dart';
 import 'package:prestora/data/services/some.dart';
+
+import 'annees.dart';
 
 import 'admin_data.dart';
 import 'admin_modules.dart';
@@ -49,26 +55,7 @@ class Admin extends StatelessWidget {
               ],
             ),
             actions: [
-              Stack(
-                children: [
-                  IconButton(
-                    onPressed: () => openNotificationsDialog(context),
-                    icon: Icon(AppIcons.notification),
-                  ),
-                  Positioned(
-                    right: 12,
-                    top: 12,
-                    child: Container(
-                      height: 5,
-                      width: 5,
-                      decoration: BoxDecoration(
-                        color: AppColors.tdError,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+              const NotifBell(),
               const SizedBox(width: 5),
               GestureDetector(
                 onTap: () => openProfileDialog(context, action),
@@ -81,12 +68,15 @@ class Admin extends StatelessWidget {
                     border: Border.all(color: scheme.outline),
                   ),
                   child: Center(
-                    child: Text(
-                      adminStore.comptes
-                          .firstWhere((c) => c.id == adminStore.currentUserId)
-                          .nomComplet[0]
-                          .toUpperCase(),
-                      style: t.headlineMedium,
+                    child: ListenableBuilder(
+                      listenable: Session.instance,
+                      builder: (_, _) {
+                        final n = Session.instance.me?.nomComplet ?? '?';
+                        return Text(
+                          n.isEmpty ? '?' : n[0].toUpperCase(),
+                          style: t.headlineMedium,
+                        );
+                      },
                     ),
                   ),
                 ),
@@ -121,12 +111,16 @@ class _AdminHome extends StatelessWidget {
     Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
   }
 
+  String _anneesResume() {
+    final s = Session.instance;
+    final a = s.active;
+    if (a == null) return '${s.annees.length} année(s) · aucune active';
+    return '${s.annees.length} année(s) · ${a.libelle} active';
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
-    final me = adminStore.comptes.firstWhere(
-      (c) => c.id == adminStore.currentUserId,
-    );
 
     String getGreeting() {
       final int hour = DateTime.now().hour;
@@ -150,17 +144,25 @@ class _AdminHome extends StatelessWidget {
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 720),
         child: ListenableBuilder(
-          listenable: adminStore,
-          builder: (context, _) => ListView(
+          listenable: Listenable.merge([adminStore, Session.instance]),
+          builder: (context, _) {
+            final me = Session.instance.me;
+            return ListView(
             padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
             children: [
               // ── Salutation ──
               Text(getGreeting(), style: t.bodyLarge),
               const SizedBox(height: 4),
-              Text(me.nomComplet, style: t.displaySmall),
+              Text(me?.nomComplet ?? '', style: t.displaySmall),
               const SizedBox(height: 4),
-              Text(me.type.label, style: t.bodySmall),
-              const SizedBox(height: 24),
+              Text(me?.type.label ?? '', style: t.bodySmall),
+              const SizedBox(height: 20),
+
+              // ── Année académique en cours ──
+              AnneeHeroCard(
+                onTap: () => _go(context, const AnneesPage()),
+              ),
+              const SizedBox(height: 20),
 
               // ── Compteurs ──
               Row(
@@ -210,6 +212,13 @@ class _AdminHome extends StatelessWidget {
               const SizedBox(height: 22),
 
               _ModuleCard(
+                icon: Icons.event_note_outlined,
+                title: 'Années académiques',
+                subtitle: _anneesResume(),
+                onTap: () => _go(context, const AnneesPage()),
+              ),
+              const SizedBox(height: 15),
+              _ModuleCard(
                 icon: Icons.manage_accounts_outlined,
                 title: 'Comptes utilisateurs',
                 subtitle:
@@ -244,9 +253,33 @@ class _AdminHome extends StatelessWidget {
                 onTap: () => _go(context, const BaremesPage()),
               ),
 
+              if (kDebugMode) ...[
+                const SizedBox(height: 24),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final go = await confirmDialog(
+                      context,
+                      title: 'Charger les données de démonstration ?',
+                      message:
+                          'Crée facultés, promotions, cours, barèmes et 13 comptes de test (mode debug uniquement). Relançable sans doublons.',
+                      confirmLabel: 'Charger',
+                    );
+                    if (!go) return;
+                    Notif.info('Chargement en cours…');
+                    try {
+                      Notif.info(await DemoSeed.run());
+                    } catch (e) {
+                      Notif.erreur(e);
+                    }
+                  },
+                  icon: const Icon(Icons.science_outlined),
+                  label: const Text('Données de démonstration (debug)'),
+                ),
+              ],
               const SizedBox(height: 50),
             ],
-          ),
+            );
+          },
         ),
       ),
     );

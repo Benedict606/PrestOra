@@ -8,13 +8,45 @@ import 'package:prestora/app/view/payslip/authority/autorite.dart';
 import 'package:prestora/app/view/payslip/authority/paie_data.dart';
 import 'package:prestora/app/view/payslip/secretary/secretaire.dart';
 import 'package:prestora/app/view/prestation/student/student.dart';
-import 'package:prestora/app/view/prestation/supervisor/Encadreur.dart';
+import 'package:prestora/app/view/prestation/supervisor/encadreur.dart';
 import 'package:prestora/app/view/setting/setting.dart';
 import 'package:prestora/app/view/teacher/enseignant.dart';
+import 'package:prestora/app/view/admin/admin_data.dart';
+import 'package:prestora/data/services/session.dart';
 import 'package:prestora/mainview.dart';
+
+/// Page d'accueil de chaque rôle.
+String routeFor(TypeCompte t) => switch (t) {
+  TypeCompte.administrateur => RoutePath.admin,
+  TypeCompte.chefPromotion => RoutePath.etudiant,
+  TypeCompte.encadreur => RoutePath.encadreur,
+  TypeCompte.enseignant => RoutePath.enseignant,
+  TypeCompte.secretaire => RoutePath.secretaire,
+  TypeCompte.doyen => RoutePath.doyen,
+  TypeCompte.vra => RoutePath.vra,
+  TypeCompte.recteur => RoutePath.recteur,
+  TypeCompte.ag => RoutePath.ag,
+  TypeCompte.comptabilite => RoutePath.comptabilite,
+};
+
+final Set<String> _pagesDeRole = {
+  for (final t in TypeCompte.values) routeFor(t),
+};
 
 GoRouter router = GoRouter(
   initialLocation: RoutePath.login,
+  refreshListenable: Session.instance,
+  redirect: (context, state) {
+    final s = Session.instance;
+    final loc = state.matchedLocation;
+    final me = s.me;
+    if (me == null) return loc == RoutePath.login ? null : RoutePath.login;
+    final home = routeFor(me.type);
+    if (loc == RoutePath.login || loc == '/') return home;
+    // Chaque rôle n'accède qu'à sa propre page
+    if (_pagesDeRole.contains(loc) && loc != home) return home;
+    return null;
+  },
   routes: [
     GoRoute(
       name: "mainview",

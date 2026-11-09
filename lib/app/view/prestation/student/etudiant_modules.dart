@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:prestora/data/services/piece_service.dart';
 import 'package:prestora/app/view/admin/admin_modules.dart';
 
 // Widgets partagés définis dans la page Admin.
 // Conseil : à terme, déplacez-les dans un dossier commun (ex. lib/app/shared/widgets/).
+import 'package:prestora/data/repositories/suivi_repository.dart';
+import 'package:prestora/data/services/session.dart';
+
 import 'etudiant_data.dart';
 
 void _snack(BuildContext context, String message) {
@@ -224,40 +228,6 @@ class CoursDetailPage extends StatelessWidget {
                   ),
                 ),
 
-              // ── Outil de démo (à supprimer) ──
-              if (!lecture && cours.nbEncodees > 0) ...[
-                const SizedBox(height: 20),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('OUTIL DE DÉMO', style: t.labelSmall),
-                        const SizedBox(height: 8),
-                        Text(
-                          "Simule le moment où l'enseignant valide ses séances, pour voir l'écran passer en lecture seule.",
-                          style: t.bodySmall,
-                        ),
-                        const SizedBox(height: 12),
-                        OutlinedButton.icon(
-                          onPressed: () {
-                            etudiantStore.simulerValidationEnseignant(cours);
-                            _snack(
-                              context,
-                              "L'enseignant a validé toutes les séances.",
-                            );
-                          },
-                          icon: const Icon(Icons.fact_check_outlined, size: 18),
-                          label: const Text(
-                            "Simuler la validation de l'enseignant",
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
             ],
           ),
         );
@@ -379,6 +349,8 @@ class _SeanceFormState extends State<SeanceForm> {
       widget.seance?.fin ?? const TimeOfDay(hour: 10, minute: 0);
   late TypeSeance _type = widget.seance?.type ?? TypeSeance.cm;
   late String? _preuve = widget.seance?.preuve;
+  late String? _preuveId = widget.seance?.preuveId;
+  bool _busy = false;
   late final TextEditingController _chap = TextEditingController(
     text: widget.seance?.chapitre ?? '',
   );
@@ -396,10 +368,14 @@ class _SeanceFormState extends State<SeanceForm> {
 
   Future<void> _pickDate() async {
     final today = DateTime.now();
+    final debutAnnee = Session.instance.active?.debut ?? DateTime(2026, 9, 1);
+    final first = debutAnnee.isAfter(today) ? today : debutAnnee;
+    var init = _date.isAfter(today) ? today : _date;
+    if (init.isBefore(first)) init = first;
     final d = await showDatePicker(
       context: context,
-      initialDate: _date.isAfter(today) ? today : _date,
-      firstDate: DateTime(2026, 9, 1),
+      initialDate: init,
+      firstDate: first,
       lastDate: today, // pas de date future
     );
     if (d != null) setState(() => _date = d);
@@ -414,7 +390,7 @@ class _SeanceFormState extends State<SeanceForm> {
     setState(() => debut ? _debut = t : _fin = t);
   }
 
-  void _save() {
+  Future<void> _save() async {
     final cours = widget.cours;
     final others = cours.seances.where((s) => s != widget.seance).toList();
     final dejaPreste = others.fold(0.0, (s, e) => s + e.heures);
@@ -443,39 +419,53 @@ class _SeanceFormState extends State<SeanceForm> {
     });
     if (_eHeure != null || _eChap != null) return;
 
+    final nav = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
+    final repo = SuiviRepository.instance;
+    setState(() => _busy = true);
+    final bool ok;
     if (_edit) {
-      widget.seance!
-        ..date = _date
-        ..debut = _debut
-        ..fin = _fin
-        ..type = _type
-        ..chapitre = _chap.text.trim()
-        ..preuve = _preuve;
-      etudiantStore.touch();
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Séance mise à jour.')),
-      );
-    } else {
-      etudiantStore.addSeance(
+      // On n'altère pas l'objet affiché : la mise à jour revient de Firestore.
+      ok = await repo.modifierSeance(
         cours,
         Seance(
-          id: 's${DateTime.now().microsecondsSinceEpoch}',
+          id: widget.seance!.id,
           date: _date,
           debut: _debut,
           fin: _fin,
           chapitre: _chap.text.trim(),
           type: _type,
           preuve: _preuve,
+          preuveId: _preuveId,
         ),
       );
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text("Séance enregistrée. L'enseignant sera notifié."),
+    } else {
+      ok = await repo.ajouterSeance(
+        cours,
+        Seance(
+          id: '',
+          date: _date,
+          debut: _debut,
+          fin: _fin,
+          chapitre: _chap.text.trim(),
+          type: _type,
+          preuve: _preuve,
+          preuveId: _preuveId,
         ),
       );
     }
-    Navigator.pop(context);
+    if (!ok) {
+      if (mounted) setState(() => _busy = false);
+      return;
+    }
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          _edit ? 'Séance mise à jour.' : 'Séance enregistrée.',
+        ),
+      ),
+    );
+    nav.pop();
   }
 
   @override
@@ -590,11 +580,18 @@ class _SeanceFormState extends State<SeanceForm> {
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
-                  // TODO : brancher image_picker (appareil photo / galerie)
-                  onPressed: () => setState(
-                    () => _preuve =
-                        'registre_${two(_date.day)}-${two(_date.month)}.jpg',
-                  ),
+                  onPressed: () async {
+                    final p = await PieceService.choisir(
+                      context,
+                      prefixe: 'registre_${two(_date.day)}-${two(_date.month)}',
+                    );
+                    if (p != null && mounted) {
+                      setState(() {
+                        _preuve = p.nom;
+                        _preuveId = p.id;
+                      });
+                    }
+                  },
                   icon: const Icon(Icons.photo_camera_outlined, size: 18),
                   label: const Text('Ajouter une photo'),
                 ),
@@ -611,7 +608,10 @@ class _SeanceFormState extends State<SeanceForm> {
                     ),
                   ),
                   TextButton(
-                    onPressed: () => setState(() => _preuve = null),
+                    onPressed: () => setState(() {
+                      _preuve = null;
+                      _preuveId = null;
+                    }),
                     child: const Text('Retirer'),
                   ),
                 ],
@@ -621,7 +621,7 @@ class _SeanceFormState extends State<SeanceForm> {
             SizedBox(
               width: double.infinity,
               child: FilledButton(
-                onPressed: _save,
+                onPressed: _busy ? null : _save,
                 child: Text(_edit ? 'Enregistrer' : 'Enregistrer la séance'),
               ),
             ),

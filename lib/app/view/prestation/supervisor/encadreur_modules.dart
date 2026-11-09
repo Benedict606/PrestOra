@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:prestora/data/services/pdf_service.dart';
 import 'package:prestora/app/view/admin/admin_modules.dart';
 import 'package:prestora/app/view/prestation/student/etudiant_data.dart';
 import 'package:prestora/app/view/prestation/student/etudiant_modules.dart';
@@ -39,7 +40,8 @@ Future<void> cloturerCours(BuildContext context, CoursEnc c) async {
     confirmLabel: 'Valider le cours',
   );
   if (!ok || !context.mounted) return;
-  encadreurStore.cloturer(c);
+  final fait = await encadreurStore.cloturer(c);
+  if (!fait || !context.mounted) return;
   _snack(context, 'Cours clôturé. Le secrétaire de la faculté a été notifié.');
 }
 
@@ -306,11 +308,13 @@ class _AffecterSheetState extends State<AffecterSheet> {
   String _q = '';
   EnseignantFictif? _choisi;
 
-  void _affecter() {
+  Future<void> _affecter() async {
     final e = _choisi;
     if (e == null) return;
     final messenger = ScaffoldMessenger.of(context);
-    encadreurStore.affecter(widget.cours, e);
+    final nav = Navigator.of(context);
+    final fait = await encadreurStore.affecter(widget.cours, e);
+    if (!fait) return;
     messenger.showSnackBar(
       SnackBar(
         content: Text(
@@ -318,7 +322,7 @@ class _AffecterSheetState extends State<AffecterSheet> {
         ),
       ),
     );
-    Navigator.pop(context);
+    nav.pop();
   }
 
   @override
@@ -628,6 +632,19 @@ class CoursEncPage extends StatelessWidget {
               child: ListView(
                 padding: const EdgeInsets.all(20),
                 children: [
+                  if (cours.suivi != null)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: OutlinedButton.icon(
+                        onPressed: () => PdfService.partagerFicheCours(
+                          context,
+                          cours.suivi!,
+                        ),
+                        icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+                        label: const Text('Fiche de prestation (PDF)'),
+                      ),
+                    ),
+                  const SizedBox(height: 8),
                   // ── En-tête ──
                   Card(
                     child: Padding(
@@ -724,43 +741,6 @@ class CoursEncPage extends StatelessWidget {
                       ),
                     ),
 
-                  // ── Outil de démo (à supprimer) ──
-                  if (!lecture && s.nbEncodees > 0) ...[
-                    const SizedBox(height: 20),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('OUTIL DE DÉMO', style: t.labelSmall),
-                            const SizedBox(height: 8),
-                            Text(
-                              "Simule la validation de toutes les séances par l'enseignant.",
-                              style: t.bodySmall,
-                            ),
-                            const SizedBox(height: 12),
-                            OutlinedButton.icon(
-                              onPressed: () {
-                                encadreurStore.simulerValidation(cours);
-                                _snack(
-                                  context,
-                                  "L'enseignant a validé toutes les séances.",
-                                );
-                              },
-                              icon: const Icon(
-                                Icons.fact_check_outlined,
-                                size: 18,
-                              ),
-                              label: const Text(
-                                "Simuler la validation de l'enseignant",
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
                 ],
               ),
             ),

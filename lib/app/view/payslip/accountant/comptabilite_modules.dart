@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:prestora/data/services/piece_service.dart';
 import 'package:prestora/app/view/admin/admin_modules.dart';
 import 'package:prestora/app/view/payslip/authority/paie_data.dart';
 import 'package:prestora/app/view/payslip/authority/paie_widgets.dart';
@@ -25,6 +26,7 @@ class _PaiementPageState extends State<PaiementPage> {
   final _reference = TextEditingController();
   final _imputation = TextEditingController();
   String? _bordereau;
+  String? _bordereauId;
   String? _eReference;
   String? _eBordereau;
 
@@ -66,14 +68,16 @@ class _PaiementPageState extends State<PaiementPage> {
     );
     if (!ok || !mounted) return;
 
-    paieStore.payer(
+    final paye = await paieStore.payer(
       d,
       reference: _reference.text.trim(),
       date: _date,
       modeReglement: _mode,
       bordereau: _bordereau!,
+      bordereauId: _bordereauId,
       imputation: _imputation.text.trim(),
     );
+    if (!paye || !mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     Navigator.of(context).popUntil((r) => r.isFirst);
     messenger
@@ -91,7 +95,7 @@ class _PaiementPageState extends State<PaiementPage> {
     final d = widget.dossier;
     final motif = await showRejetSheet(context, d);
     if (motif == null || !mounted) return;
-    paieStore.rejeter(d, motif);
+    if (!await paieStore.rejeter(d, motif) || !mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     Navigator.of(context).popUntil((r) => r.isFirst);
     messenger
@@ -246,13 +250,21 @@ class _PaiementPageState extends State<PaiementPage> {
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
-                    // TODO : brancher image_picker / file_picker
-                    onPressed: () => setState(() {
-                      _bordereau = 'bordereau_${d.reference}.pdf';
-                      _eBordereau = null;
-                    }),
-                    icon: const Icon(Icons.attach_file, size: 18),
-                    label: const Text('Joindre le bordereau (photo ou PDF)'),
+                    onPressed: () async {
+                      final p = await PieceService.choisir(
+                        context,
+                        prefixe: 'bordereau_${d.reference}',
+                      );
+                      if (p != null && mounted) {
+                        setState(() {
+                          _bordereau = p.nom;
+                          _bordereauId = p.id;
+                          _eBordereau = null;
+                        });
+                      }
+                    },
+                    icon: const Icon(Icons.add_a_photo_outlined, size: 18),
+                    label: const Text('Joindre le bordereau (photo)'),
                   ),
                 )
               else
@@ -271,7 +283,10 @@ class _PaiementPageState extends State<PaiementPage> {
                       ),
                     ),
                     TextButton(
-                      onPressed: () => setState(() => _bordereau = null),
+                      onPressed: () => setState(() {
+                        _bordereau = null;
+                        _bordereauId = null;
+                      }),
                       child: const Text('Retirer'),
                     ),
                   ],

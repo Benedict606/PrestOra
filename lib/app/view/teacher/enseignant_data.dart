@@ -1,5 +1,13 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:prestora/app/view/payslip/authority/paie_data.dart' show DossierWf;
 import 'package:prestora/app/view/prestation/student/etudiant_data.dart';
+import 'package:prestora/data/firebase/fb.dart';
+import 'package:prestora/data/repositories/suivi_repository.dart';
+import 'package:prestora/data/repositories/suivi_store_base.dart';
+import 'package:prestora/data/services/session.dart';
 
 // Modèle de séance / de suivi partagé avec les rôles Étudiant et Encadreur.
 
@@ -8,9 +16,9 @@ import 'package:prestora/app/view/prestation/student/etudiant_data.dart';
 //  EnseignantStore = faux dépôt, à remplacer par vos Cubits / Firebase.
 // ═══════════════════════════════════════════════════════════════
 
-/// Taux de retenue FICTIF pour la démo : la vraie valeur est « À définir »
-/// dans l'écran Barèmes de l'administrateur.
-const double kRetenueDemo = 5;
+/// Taux de retenue fiscale en vigueur (%), défini par l'administrateur dans
+/// l'écran Barèmes (collection parametres/retenue_fiscale). 0 tant que non défini.
+double get kRetenueDemo => Session.instance.retenue ?? 0;
 
 String fmtUsd(double v) => '${v.toStringAsFixed(2).replaceAll('.', ',')} \$';
 
@@ -89,7 +97,15 @@ class DossierPaie {
     this.palierRejet,
     this.motifRejet,
     this.referencePaiement,
+    this.dates,
+    this.retenuePct,
   });
+
+  /// Dates réelles de traitement par palier (si connues).
+  final Map<int, DateTime>? dates;
+
+  /// Retenue appliquée à la création du dossier (figée) ; sinon taux courant.
+  final double? retenuePct;
 
   final String reference;
   final String code;
@@ -108,7 +124,7 @@ class DossierPaie {
 
   double get heures => seances.fold(0.0, (s, e) => s + e.heures);
   double get brut => heures * taux;
-  double get retenues => brut * kRetenueDemo / 100;
+  double get retenues => brut * (retenuePct ?? kRetenueDemo) / 100;
   double get net => brut - retenues;
 
   StatutDossier get statut {
@@ -141,6 +157,9 @@ class DossierPaie {
   /// Date de traitement d'une étape (fictive : 2 jours entre chaque palier).
   DateTime? dateEtape(int palier) {
     final e = etat(palier);
+    final reelle = dates?[palier];
+    if (reelle != null) return reelle;
+    if (dates != null) return null; // dossier réel : pas de date inventée
     if (e == EtatEtape.fait || e == EtatEtape.rejete) {
       return dateInit.add(Duration(days: (palier - 1) * 2));
     }
@@ -158,26 +177,6 @@ class DossierPaie {
 }
 
 // ───────────────────────── Aides de fabrication ─────────────────────────
-Seance _sc(
-  int id,
-  int m,
-  int d,
-  int h1,
-  int h2,
-  String chap, {
-  TypeSeance type = TypeSeance.cm,
-  bool v = true,
-  String? preuve,
-}) => Seance(
-  id: 'e$id',
-  date: DateTime(2026, m, d),
-  debut: TimeOfDay(hour: h1, minute: 0),
-  fin: TimeOfDay(hour: h2, minute: 0),
-  chapitre: chap,
-  type: type,
-  validee: v,
-  preuve: preuve,
-);
 
 List<Seance> _gen(
   String p,
@@ -200,247 +199,100 @@ List<Seance> _gen(
 );
 
 // ───────────────────────── Faux dépôt ─────────────────────────
-class EnseignantStore extends ChangeNotifier {
-  final String nom = 'Dr Grâce Bahati';
-  final String grade = 'Chef de Travaux';
-  final String faculte = 'Sciences et Technologies';
-  final String institution = 'ULPGL Goma';
-  final double taux = 8;
-  final String paiement = 'Mobile Money · 0990 000 002';
+class EnseignantStore extends SuiviStoreBase {
+  String get nom => Session.instance.me?.nomComplet ?? '';
+  String get grade => Session.instance.me?.grade ?? '';
+  String get faculte => Session.instance.faculteNom ?? '';
+  String get institution => Session.instance.me?.institution ?? '';
+  String get paiement => _paiement;
+  double get taux => _taux;
 
-  String get initiale => nom.split(' ').length > 1
-      ? nom.split(' ')[1].substring(0, 1)
-      : nom.substring(0, 1);
+  String _paiement = '—';
+  double _taux = 0;
+  StreamSubscription<dynamic>? _subPaie;
+  StreamSubscription<dynamic>? _subTaux;
 
-  late final List<CoursEns> cours = [
-    CoursEns(
-      promotion: 'L1 Informatique',
-      suivi: CoursSuivi(
-        code: 'INF101',
-        intitule: "Introduction à l'algorithmique",
-        enseignant: nom,
-        grade: grade,
-        credits: 4,
-        volume: 30,
-        seances: _gen('a', [
-          "Notion d'algorithme",
-          'Variables et types',
-          'Structures conditionnelles',
-          'Boucles',
-          'Tableaux',
-        ]),
-      ),
-    ),
-    CoursEns(
-      promotion: 'L2 Informatique',
-      suivi: CoursSuivi(
-        code: 'INF204',
-        intitule: 'Bases de données relationnelles',
-        enseignant: nom,
-        grade: grade,
-        credits: 5,
-        volume: 45,
-        seances: [
-          _sc(1, 9, 9, 8, 10, 'Introduction aux SGBD'),
-          _sc(2, 9, 11, 8, 11, 'Modèle entité-association'),
-          _sc(3, 9, 16, 8, 10, 'Algèbre relationnelle'),
-          _sc(
-            4,
-            9,
-            18,
-            10,
-            13,
-            'Modélisation : exercices dirigés',
-            type: TypeSeance.td,
-          ),
-          _sc(5, 9, 23, 8, 10, 'SQL : requêtes simples'),
-          _sc(6, 9, 25, 8, 11, 'SQL : jointures et sous-requêtes', v: false),
-          _sc(
-            7,
-            9,
-            30,
-            8,
-            10,
-            'Normalisation (1FN à 3FN)',
-            v: false,
-            preuve: 'registre_30-09.jpg',
-          ),
-          _sc(
-            8,
-            10,
-            7,
-            8,
-            11,
-            'Travaux pratiques MySQL',
-            type: TypeSeance.tp,
-            v: false,
-            preuve: 'registre_07-10.jpg',
-          ),
-        ],
-      ),
-    ),
-    CoursEns(
-      promotion: 'L3 Informatique',
-      suivi: CoursSuivi(
-        code: 'INF305',
-        intitule: 'Architecture logicielle',
-        enseignant: nom,
-        grade: grade,
-        credits: 4,
-        volume: 30,
-        seances: _gen(
-          'c',
-          [
-            'Principes SOLID',
-            'Patrons de conception',
-            'Architecture en couches',
-            'Microservices',
-            'API REST',
-            'Déploiement',
-          ],
-          h1: 8,
-          h2: 13,
+  String get initiale {
+    final n = Session.instance.me?.nom ?? '';
+    return n.isEmpty ? '?' : n.substring(0, 1).toUpperCase();
+  }
+
+  final Map<String, CoursEns> _ens = {};
+  List<CoursEns> cours = [];
+
+  @override
+  Query<Map<String, dynamic>>? requete(String anneeId, String uid) =>
+      sessionsQuery(anneeId).where('enseignant_id', isEqualTo: uid);
+
+  @override
+  void onSessionChange(String? anneeId) {
+    _subPaie?.cancel();
+    _subTaux?.cancel();
+    _subDossiers?.cancel();
+    _subPaie = null;
+    _subTaux = null;
+    _subDossiers = null;
+    final me = Session.instance.me;
+    if (me == null) return;
+    if (anneeId != null) {
+      _subDossiers = Fb.db
+          .collection(Col.dossiers)
+          .where('annee_id', isEqualTo: anneeId)
+          .where('enseignant_id', isEqualTo: me.id)
+          .snapshots()
+          .listen((s) {
+            final wfs = [
+              for (final d in s.docs) DossierWf.fromDoc(d.id, d.data()),
+            ];
+            wf = {for (final w in wfs) w.reference: w};
+            dossiers = [
+              for (final w in wfs) w.snapshot,
+            ]..sort((a, b) => b.dateInit.compareTo(a.dateInit));
+            notifyListeners();
+          }, onError: (Object e) => debugPrint('dossiers: $e'));
+    } else {
+      dossiers = [];
+    }
+    // Coordonnées de paiement (sous-collection lisible par l'intéressé)
+    _subPaie = Fb.db
+        .collection(Col.utilisateurs)
+        .doc(me.id)
+        .collection(Col.paiement)
+        .doc('infos')
+        .snapshots()
+        .listen((d) {
+          final m = d.data();
+          _paiement = m == null ? '—' : '${m['mode'] ?? ''} · ${m['coordonnees'] ?? ''}';
+          notifyListeners();
+        }, onError: (Object e) => debugPrint('paiement: $e'));
+    // Taux horaire du grade
+    final g = me.grade;
+    if (g != null && g.isNotEmpty) {
+      _subTaux = Fb.db.collection(Col.baremes).doc(g).snapshots().listen((d) {
+        _taux = (d.data()?['taux'] as num?)?.toDouble() ?? 0;
+        notifyListeners();
+      }, onError: (Object e) => debugPrint('taux: $e'));
+    }
+  }
+
+  @override
+  void rebuild() {
+    final l = hub.cours;
+    final ids = l.map((c) => c.id).toSet();
+    _ens.removeWhere((id, _) => !ids.contains(id));
+    cours = [
+      for (final c in l)
+        _ens.putIfAbsent(
+          c.id,
+          () => CoursEns(suivi: c, promotion: c.promotionNom),
         ),
-      ),
-    ),
-    CoursEns(
-      promotion: 'L1 Informatique',
-      suivi: CoursSuivi(
-        code: 'INF120',
-        intitule: 'Structures de données',
-        enseignant: nom,
-        grade: grade,
-        credits: 4,
-        volume: 30,
-        cloture: true,
-        seances: _gen(
-          'd',
-          [
-            'Listes chaînées',
-            'Piles et files',
-            'Arbres binaires',
-            'Graphes',
-            'Tables de hachage',
-            'Tris',
-          ],
-          h1: 8,
-          h2: 13,
-          m: 9,
-          d0: 1,
-        ),
-      ),
-    ),
-  ];
+    ];
+  }
 
-  late final List<DossierPaie> dossiers = [
-    DossierPaie(
-      reference: 'UCB-2026-0142',
-      code: 'INF120',
-      intitule: 'Structures de données',
-      promotion: 'L1 Informatique',
-      credits: 4,
-      volume: 30,
-      taux: taux,
-      palierCourant: 5,
-      dateInit: DateTime(2026, 9, 28),
-      modePaiement: paiement,
-      seances: _gen(
-        'd',
-        [
-          'Listes chaînées',
-          'Piles et files',
-          'Arbres binaires',
-          'Graphes',
-          'Tables de hachage',
-          'Tris',
-        ],
-        h1: 8,
-        h2: 13,
-        m: 9,
-        d0: 1,
-      ),
-    ),
-    DossierPaie(
-      reference: 'UCB-2026-0156',
-      code: 'INF110',
-      intitule: 'Bureautique et internet',
-      promotion: 'L1 Informatique',
-      credits: 3,
-      volume: 15,
-      taux: taux,
-      palierCourant: 2,
-      dateInit: DateTime(2026, 10, 8),
-      modePaiement: paiement,
-      seances: _gen(
-        'h',
-        [
-          'Traitement de texte',
-          'Tableur',
-          'Présentation',
-          'Messagerie',
-          'Recherche en ligne',
-        ],
-        m: 9,
-        d0: 3,
-      ),
-    ),
-    DossierPaie(
-      reference: 'UCB-2026-0119',
-      code: 'INF050',
-      intitule: 'Atelier de programmation',
-      promotion: 'L2 Informatique',
-      credits: 3,
-      volume: 15,
-      taux: taux,
-      palierCourant: 3,
-      palierRejet: 3,
-      dateInit: DateTime(2026, 9, 14),
-      modePaiement: paiement,
-      motifRejet:
-          'Discordance entre les heures encodées (15 h) et la fiche de présence signée (12 h). Merci de corriger puis de réinitialiser le dossier.',
-      seances: _gen(
-        'r',
-        [
-          'Environnement de développement',
-          'Débogage',
-          'Tests unitaires',
-          'Gestion de versions',
-          'Projet final',
-        ],
-        m: 8,
-        d0: 20,
-      ),
-    ),
-    DossierPaie(
-      reference: 'UCB-2026-0087',
-      code: 'INF090',
-      intitule: "Initiation à l'informatique",
-      promotion: 'L1 Informatique',
-      credits: 3,
-      volume: 20,
-      taux: taux,
-      palierCourant: 7,
-      dateInit: DateTime(2026, 7, 10),
-      modePaiement: paiement,
-      referencePaiement: 'MM-2026-0720-4471',
-      seances: _gen(
-        'p',
-        [
-          'Histoire et vocabulaire',
-          'Le matériel',
-          'Les logiciels',
-          'Internet et sécurité',
-          'Atelier pratique',
-        ],
-        h1: 8,
-        h2: 12,
-        m: 6,
-        d0: 1,
-      ),
-    ),
-  ];
+  List<DossierPaie> dossiers = [];
+  Map<String, DossierWf> wf = {}; // dossiers complets, par référence
+  StreamSubscription<dynamic>? _subDossiers;
 
-  // ── Compteurs ──
   int get nbSeancesAValider => cours
       .where((c) => !c.suivi.cloture)
       .fold(0, (s, c) => s + c.suivi.nbEncodees);
@@ -458,22 +310,21 @@ class EnseignantStore extends ChangeNotifier {
       )
       .fold(0.0, (s, d) => s + d.net);
 
-  // ── Actions ──
-  void valider(Seance s) {
-    s.validee = true;
-    notifyListeners();
-  }
+  Future<bool> valider(CoursSuivi c, Seance s) =>
+      SuiviRepository.instance.validerSeance(c, s, true);
 
-  void devalider(Seance s) {
-    s.validee = false;
-    notifyListeners();
-  }
+  Future<bool> devalider(CoursSuivi c, Seance s) =>
+      SuiviRepository.instance.validerSeance(c, s, false);
 
-  void toutValider(CoursEns c) {
-    for (final s in c.suivi.seances) {
-      s.validee = true;
-    }
-    notifyListeners();
+  Future<bool> toutValider(CoursEns c) =>
+      SuiviRepository.instance.toutValider(c.suivi);
+
+  @override
+  void stop() {
+    _subPaie?.cancel();
+    _subTaux?.cancel();
+    _subDossiers?.cancel();
+    super.stop();
   }
 }
 

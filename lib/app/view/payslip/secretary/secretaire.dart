@@ -62,26 +62,7 @@ class _SecretaireState extends State<Secretaire> {
               ],
             ),
             actions: [
-              Stack(
-                children: [
-                  IconButton(
-                    onPressed: () => openNotificationsDialog(context),
-                    icon: Icon(AppIcons.notification),
-                  ),
-                  Positioned(
-                    right: 12,
-                    top: 12,
-                    child: Container(
-                      height: 5,
-                      width: 5,
-                      decoration: BoxDecoration(
-                        color: AppColors.tdError,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+              const NotifBell(),
               const SizedBox(width: 5),
               GestureDetector(
                 onTap: () => openProfileDialog(context, action),
@@ -95,7 +76,7 @@ class _SecretaireState extends State<Secretaire> {
                   ),
                   child: Center(
                     child: Text(
-                      paieStore.secretaireNom.split(' ')[1].substring(0, 1),
+                      paieStore.initiale,
                       style: t.headlineMedium,
                     ),
                   ),
@@ -200,7 +181,7 @@ Future<void> _soumettre(BuildContext context, DossierWf d) async {
     confirmLabel: 'Soumettre',
   );
   if (!ok || !context.mounted) return;
-  paieStore.soumettre(d);
+  if (!await paieStore.soumettre(d) || !context.mounted) return;
   paieSnack(context, 'Dossier ${d.reference} soumis au Doyen.');
 }
 

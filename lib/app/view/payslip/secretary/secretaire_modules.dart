@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:prestora/data/services/piece_service.dart';
 import 'package:prestora/app/view/payslip/authority/paie_data.dart';
 import 'package:prestora/app/view/payslip/authority/paie_widgets.dart';
 import 'package:prestora/app/view/prestation/student/etudiant_data.dart';
@@ -347,15 +348,15 @@ class _InitialiserSheetState extends State<InitialiserSheet> {
     super.dispose();
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     if (!_p.validate()) return;
-    paieStore.initialiser(
+    final ok = await paieStore.initialiser(
       widget.cours,
       mode: _p.mode,
       coordonnees: _p.coordonnees,
       date: _p.date,
     );
-    Navigator.pop(context, true);
+    if (ok && mounted) Navigator.pop(context, true);
   }
 
   @override
@@ -439,6 +440,10 @@ class _CorrectionPageState extends State<CorrectionPage> {
     date: widget.dossier.dateInit,
   );
   late final List<String> _pieces = [...widget.dossier.pieces];
+  late final List<String> _piecesIds = [
+    for (var i = 0; i < widget.dossier.pieces.length; i++)
+      i < widget.dossier.piecesIds.length ? widget.dossier.piecesIds[i] : '',
+  ];
   final _commentaire = TextEditingController();
 
   @override
@@ -448,19 +453,19 @@ class _CorrectionPageState extends State<CorrectionPage> {
     super.dispose();
   }
 
-  void _reinitialiser() {
+  Future<void> _reinitialiser() async {
     if (!_p.validate()) return;
     final d = widget.dossier;
     final cible = d.palierRejet!;
-    d.pieces
-      ..clear()
-      ..addAll(_pieces);
-    paieStore.reinitialiser(
+    final ok = await paieStore.reinitialiser(
       d,
       mode: _p.mode,
       coordonnees: _p.coordonnees,
+      pieces: [..._pieces],
+      piecesIds: [..._piecesIds],
       commentaire: _commentaire.text.trim(),
     );
+    if (!ok || !mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     Navigator.pop(context);
     messenger
@@ -591,16 +596,26 @@ class _CorrectionPageState extends State<CorrectionPage> {
                               ),
                               const SizedBox(width: 8),
                               Expanded(
-                                child: Text(
-                                  _pieces[i],
-                                  style: t.bodySmall?.copyWith(
-                                    color: scheme.primary,
+                                child: InkWell(
+                                  onTap: () => PieceService.voir(
+                                    context,
+                                    _piecesIds[i],
+                                    _pieces[i],
+                                  ),
+                                  child: Text(
+                                    _pieces[i],
+                                    style: t.bodySmall?.copyWith(
+                                      color: scheme.primary,
+                                    ),
                                   ),
                                 ),
                               ),
                               TextButton(
                                 onPressed: () =>
-                                    setState(() => _pieces.removeAt(i)),
+                                    setState(() {
+                                      _pieces.removeAt(i);
+                                      _piecesIds.removeAt(i);
+                                    }),
                                 child: const Text('Retirer'),
                               ),
                             ],
@@ -608,14 +623,20 @@ class _CorrectionPageState extends State<CorrectionPage> {
                         ),
                       const SizedBox(height: 8),
                       OutlinedButton.icon(
-                        // TODO : brancher image_picker / file_picker
-                        onPressed: () => setState(
-                          () => _pieces.add(
-                            'piece_corrigee_${_pieces.length + 1}.pdf',
-                          ),
-                        ),
-                        icon: const Icon(Icons.attach_file, size: 18),
-                        label: const Text('Ajouter ou remplacer une pièce'),
+                        onPressed: () async {
+                          final p = await PieceService.choisir(
+                            context,
+                            prefixe: 'piece_${widget.dossier.reference}',
+                          );
+                          if (p != null && mounted) {
+                            setState(() {
+                              _pieces.add(p.nom);
+                              _piecesIds.add(p.id);
+                            });
+                          }
+                        },
+                        icon: const Icon(Icons.add_a_photo_outlined, size: 18),
+                        label: const Text('Ajouter une photo'),
                       ),
                     ],
                   ),

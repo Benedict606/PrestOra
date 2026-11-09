@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:prestora/data/services/pdf_service.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:prestora/app/shared/styles/colors.dart';
 import 'package:prestora/app/shared/styles/icons.dart';
@@ -75,26 +76,7 @@ class _AutoriteState extends State<Autorite> {
               ],
             ),
             actions: [
-              Stack(
-                children: [
-                  IconButton(
-                    onPressed: () => openNotificationsDialog(context),
-                    icon: Icon(AppIcons.notification),
-                  ),
-                  Positioned(
-                    right: 12,
-                    top: 12,
-                    child: Container(
-                      height: 5,
-                      width: 5,
-                      decoration: BoxDecoration(
-                        color: AppColors.tdError,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+              const NotifBell(),
               const SizedBox(width: 5),
               GestureDetector(
                 onTap: () => openProfileDialog(context, action),
@@ -237,7 +219,7 @@ Future<void> _valider(
   if (!ok || !context.mounted) return;
   final nav = Navigator.of(context);
   final messenger = ScaffoldMessenger.of(context);
-  paieStore.valider(d);
+  if (!await paieStore.valider(d)) return;
   nav.pop();
   messenger
     ..hideCurrentSnackBar()
@@ -255,7 +237,7 @@ Future<void> _rejeter(BuildContext context, DossierWf d) async {
   if (motif == null || !context.mounted) return;
   final nav = Navigator.of(context);
   final messenger = ScaffoldMessenger.of(context);
-  paieStore.rejeter(d, motif);
+  if (!await paieStore.rejeter(d, motif)) return;
   nav.pop();
   messenger
     ..hideCurrentSnackBar()
@@ -539,10 +521,7 @@ class _HistoriqueState extends State<_Historique> {
                     footer: Align(
                       alignment: Alignment.centerRight,
                       child: OutlinedButton.icon(
-                        onPressed: () => paieSnack(
-                          context,
-                          'Fiche ${d.reference} (PDF) : téléchargement simulé.',
-                        ),
+                        onPressed: () => PdfService.partagerEtat(context, d),
                         icon: const Icon(Icons.download_outlined, size: 18),
                         label: const Text('Télécharger (PDF)'),
                       ),

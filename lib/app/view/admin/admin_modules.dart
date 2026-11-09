@@ -1,9 +1,13 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:prestora/data/services/some.dart';
 import 'package:prestora/app/shared/styles/colors.dart';
 import 'package:prestora/app/shared/styles/icons.dart';
 import 'package:prestora/app/shared/styles/images.dart';
+
+import 'package:prestora/core/notify.dart';
+import 'package:prestora/data/services/auth_service.dart';
 
 import 'admin_data.dart';
 
@@ -71,27 +75,7 @@ class AdminScaffold extends StatelessWidget {
             onPressed: () {},
             icon: Icon(AppIcons.search),
           ),
-          Stack(
-            children: [
-              IconButton(
-                // onPressed: action.changeThemeMode,
-                onPressed: null,
-                icon: Icon(AppIcons.notification),
-              ),
-              Positioned(
-                right: 12,
-                top: 12,
-                child: Container(
-                  height: 5,
-                  width: 5,
-                  decoration: BoxDecoration(
-                    color: AppColors.tdError,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              ),
-            ],
-          ),
+          const NotifBell(),
 
           const SizedBox(width: 5),
           GestureDetector(
@@ -483,7 +467,9 @@ class _ComptesPageState extends State<ComptesPage> {
     if (ok) adminStore.toggleCompte(c);
   }
 
-  void _openForm([Compte? c]) {
+  Future<void> _openForm([Compte? c]) async {
+    if (c != null) await adminStore.chargerPaiement(c);
+    if (!mounted) return;
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -681,6 +667,8 @@ class _CompteFormState extends State<CompteForm> {
   late String? _promotion = widget.compte?.promotion;
   late String? _grade = widget.compte?.grade;
   late String _mode = widget.compte?.modePaiement ?? 'Banque';
+  late bool _gereAnnees = widget.compte?.gereAnnees ?? false;
+  bool _busy = false;
 
   String? _eNom, _eEmail, _eType, _eFac, _ePromo, _eGrade;
 
@@ -692,7 +680,7 @@ class _CompteFormState extends State<CompteForm> {
     super.dispose();
   }
 
-  void _save() {
+  Future<void> _save() async {
     final emailTaken = adminStore.comptes.any(
       (c) =>
           c.email.toLowerCase() == _email.text.trim().toLowerCase() &&
@@ -716,45 +704,66 @@ class _CompteFormState extends State<CompteForm> {
           ? 'Grade obligatoire'
           : null;
     });
-    if ([_eNom, _eEmail, _eType, _eFac, _ePromo, _eGrade].any((e) => e != null))
+    if ([_eNom, _eEmail, _eType, _eFac, _ePromo, _eGrade].any((e) => e != null)) {
       return;
+    }
 
     final type = _type!;
-    final c =
-        widget.compte ??
-        Compte(
-          id: 'c${DateTime.now().millisecondsSinceEpoch}',
-          nom: '',
-          email: '',
-          type: type,
-        );
-    c
-      ..nom = _nom.text.trim()
-      ..email = _email.text.trim()
-      ..titre = _titre ?? ''
-      ..telephone = _tel.text.trim()
-      ..type = type
-      ..faculte = type.needsFaculte ? _faculte : null
-      ..promotion = type.needsPromotion ? _promotion : null
-      ..grade = type.isEnseignant ? _grade : null
-      ..institution = type.isEnseignant ? _inst.text.trim() : null
-      ..modePaiement = type.isEnseignant ? _mode : null
-      ..coordonneesPaiement = type.isEnseignant ? _paie.text.trim() : null;
+    final nav = Navigator.of(context);
+    setState(() => _busy = true);
+    try {
+      final Compte c;
+      String? pwd;
+      if (_edit) {
+        c = widget.compte!;
+      } else {
+        // 1) crée l'utilisateur Firebase Auth, 2) enregistre son profil
+        pwd = 'Prest-${1000 + Random().nextInt(9000)}';
+        final uid = await AuthService.createAccount(_email.text.trim(), pwd);
+        c = Compte(id: uid, nom: '', email: '', type: type);
+      }
+      c
+        ..nom = _nom.text.trim()
+        ..email = _email.text.trim()
+        ..titre = _titre ?? ''
+        ..telephone = _tel.text.trim()
+        ..type = type
+        ..faculte = type.needsFaculte ? _faculte : null
+        ..promotion = type.needsPromotion ? _promotion : null
+        ..grade = type.isEnseignant ? _grade : null
+        ..institution = type.isEnseignant ? _inst.text.trim() : null
+        ..modePaiement = type.isEnseignant ? _mode : null
+        ..coordonneesPaiement = type.isEnseignant ? _paie.text.trim() : null
+        ..gereAnnees = type == TypeCompte.administrateur ? false : _gereAnnees;
 
-    final messenger = ScaffoldMessenger.of(context);
-    if (_edit) {
-      adminStore.touch();
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Compte mis à jour.')),
-      );
-    } else {
-      adminStore.addCompte(c);
-      final pwd = 'Prest-${1000 + Random().nextInt(9000)}';
-      messenger.showSnackBar(
-        SnackBar(content: Text('Compte créé. Mot de passe temporaire : $pwd')),
-      );
+      final ok = _edit
+          ? await adminStore.saveCompte(c)
+          : await adminStore.createCompte(c);
+      if (!ok) {
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+      if (_edit) {
+        Notif.info('Compte mis à jour.');
+      } else {
+        rootMessengerKey.currentState
+          ?..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              duration: const Duration(seconds: 25),
+              showCloseIcon: true,
+              behavior: SnackBarBehavior.floating,
+              content: SelectableText(
+                'Compte créé. Mot de passe temporaire : $pwd',
+              ),
+            ),
+          );
+      }
+      nav.pop();
+    } catch (e) {
+      Notif.erreur(e);
+      if (mounted) setState(() => _busy = false);
     }
-    Navigator.pop(context);
   }
 
   @override
@@ -928,13 +937,31 @@ class _CompteFormState extends State<CompteForm> {
                 style: t.bodySmall,
               ),
             ],
+            if (type != null && type != TypeCompte.administrateur) ...[
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _gereAnnees,
+                onChanged: (v) => setState(() => _gereAnnees = v),
+                title: const Text('Peut gérer les années académiques'),
+                subtitle: const Text(
+                  'Créer, activer et clôturer les années ; programmer les cours.',
+                ),
+              ),
+            ],
 
             const SizedBox(height: 24),
             SizedBox(
               width: double.infinity,
               child: FilledButton(
-                onPressed: _save,
-                child: Text(_edit ? 'Enregistrer' : 'Créer le compte'),
+                onPressed: _busy ? null : _save,
+                child: _busy
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2.5),
+                      )
+                    : Text(_edit ? 'Enregistrer' : 'Créer le compte'),
               ),
             ),
             const SizedBox(height: 12),
@@ -945,6 +972,29 @@ class _CompteFormState extends State<CompteForm> {
                 child: const Text('Annuler'),
               ),
             ),
+            if (_edit) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: TextButton.icon(
+                  onPressed: _busy
+                      ? null
+                      : () async {
+                          final mail = widget.compte!.email;
+                          try {
+                            await AuthService.resetPassword(mail);
+                            Notif.info(
+                              'Lien de réinitialisation envoyé à $mail.',
+                            );
+                          } catch (e) {
+                            Notif.erreur(e);
+                          }
+                        },
+                  icon: const Icon(Icons.lock_reset, size: 18),
+                  label: const Text('Envoyer un lien de réinitialisation'),
+                ),
+              ),
+            ],
 
             const SizedBox(height: 40),
           ],
@@ -1063,7 +1113,7 @@ class FaculteDetailPage extends StatelessWidget {
     );
     if (nom == null) return;
     faculte.nom = nom;
-    adminStore.touch();
+    adminStore.saveFaculte(faculte);
   }
 
   Future<void> _addDept(BuildContext context) async {
@@ -1478,7 +1528,7 @@ class _CoursFormState extends State<CoursForm> {
         ..promotion = _promotion!
         ..credits = credits!
         ..volume = volume!;
-      adminStore.touch();
+      adminStore.saveCours(widget.cours!);
       messenger.showSnackBar(
         const SnackBar(content: Text('Cours mis à jour.')),
       );

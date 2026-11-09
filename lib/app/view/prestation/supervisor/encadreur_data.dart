@@ -1,12 +1,17 @@
-import 'package:flutter/material.dart';
-import 'package:prestora/app/view/prestation/student/etudiant_data.dart';
+import 'dart:async';
 
-// On réutilise le modèle de séance / de suivi défini côté Étudiant :
-// c'est la même donnée métier vue par deux rôles.
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
+import 'package:prestora/app/view/prestation/student/etudiant_data.dart';
+import 'package:prestora/core/notify.dart';
+import 'package:prestora/data/firebase/fb.dart';
+import 'package:prestora/data/repositories/suivi_repository.dart';
+import 'package:prestora/data/repositories/suivi_store_base.dart';
+import 'package:prestora/data/services/session.dart';
 
 // ═══════════════════════════════════════════════════════════════
-//  Modèles + données fictives de l'espace Encadreur pédagogique
-//  EncadreurStore = faux dépôt, à remplacer par vos Cubits / Firebase.
+//  Espace Encadreur : promotions de sa faculté, cours de l'offre de
+//  l'année active, affectation d'un enseignant, clôture du cours.
 // ═══════════════════════════════════════════════════════════════
 
 enum StatutEnc {
@@ -19,7 +24,6 @@ enum StatutEnc {
   final String label;
 }
 
-/// Un cours du catalogue ; `suivi` est null tant qu'aucun enseignant n'est affecté.
 class CoursEnc {
   CoursEnc({
     required this.code,
@@ -27,13 +31,23 @@ class CoursEnc {
     required this.credits,
     required this.volume,
     this.suivi,
+    this.offreId = '',
+    this.coursId = '',
+    this.promotionId = '',
+    this.promotionNom = '',
+    this.faculteId = '',
   });
 
-  final String code;
-  final String intitule;
-  final int credits;
-  final int volume;
+  String code;
+  String intitule;
+  int credits;
+  int volume;
   CoursSuivi? suivi; // session de suivi (enseignant + séances)
+  String offreId;
+  String coursId;
+  String promotionId;
+  String promotionNom;
+  String faculteId;
 
   StatutEnc get statut {
     final s = suivi;
@@ -48,15 +62,19 @@ class CoursEnc {
 
 class PromotionEnc {
   PromotionEnc({
+    this.id = '',
     required this.nom,
     required this.departement,
     required this.cours,
     this.chef,
+    this.chefId,
   });
 
-  final String nom;
-  final String departement;
-  final String? chef; // chef de promotion
+  final String id;
+  String nom;
+  String departement;
+  String? chef; // chef de promotion (nom)
+  String? chefId;
   final List<CoursEnc> cours;
 
   int get nonSuivis => cours.where((c) => c.suivi == null).length;
@@ -65,384 +83,233 @@ class PromotionEnc {
 }
 
 class EnseignantFictif {
-  const EnseignantFictif(this.nom, this.email, this.grade);
+  const EnseignantFictif(this.nom, this.email, this.grade, {this.uid = ''});
   final String nom;
   final String email;
   final String grade;
+  final String uid;
 }
 
-// ───────────────────────── Aides de fabrication ─────────────────────────
-List<Seance> _gen(
-  String p,
-  List<String> chaps, {
-  int h1 = 8,
-  int h2 = 11,
-  int validees = 0,
-}) => List.generate(
-  chaps.length,
-  (i) => Seance(
-    id: '$p$i',
-    date: DateTime(2026, 9, 2 + i * 5),
-    debut: TimeOfDay(hour: h1, minute: 0),
-    fin: TimeOfDay(hour: h2, minute: 0),
-    chapitre: chaps[i],
-    validee: i < validees,
-  ),
-);
-
-CoursSuivi _suivi(
-  String code,
-  String intitule,
-  String ens,
-  String grade,
-  int credits,
-  int volume,
-  List<Seance> seances, {
-  bool cloture = false,
-}) => CoursSuivi(
-  code: code,
-  intitule: intitule,
-  enseignant: ens,
-  grade: grade,
-  credits: credits,
-  volume: volume,
-  seances: seances,
-  cloture: cloture,
-);
-
-// ───────────────────────── Faux dépôt ─────────────────────────
-class EncadreurStore extends ChangeNotifier {
-  final String nom = 'Dr Olivier Kabano';
-  final String faculte = 'Sciences et Technologies';
-  final String anneeAcademique = '2026-2027';
+class EncadreurStore extends SuiviStoreBase {
+  String get nom => Session.instance.me?.nomComplet ?? '';
+  String get faculte => Session.instance.faculteNom ?? '';
+  String get anneeAcademique => Session.instance.active?.libelle ?? '—';
 
   String get initiale {
-    final parts = nom.split(' ');
-    return (parts.length > 1 ? parts[1] : parts[0]).substring(0, 1);
+    final n = Session.instance.me?.nom ?? '';
+    return n.isEmpty ? '?' : n.substring(0, 1).toUpperCase();
   }
 
-  final List<EnseignantFictif> enseignants = const [
-    EnseignantFictif(
-      'Pr Aimé Cirimwami',
-      'a.cirimwami@exemple.org',
-      'Professeur Ordinaire',
-    ),
-    EnseignantFictif(
-      'Pr Joseph Mushagalusa',
-      'j.mushagalusa@exemple.org',
-      'Professeur',
-    ),
-    EnseignantFictif(
-      'Dr Alain Bulambo',
-      'a.bulambo@exemple.org',
-      'Professeur Associé',
-    ),
-    EnseignantFictif(
-      'Dr Esther Namwira',
-      'e.namwira@exemple.org',
-      'Professeur Associé',
-    ),
-    EnseignantFictif(
-      'Dr Grâce Bahati',
-      'g.bahati@exemple.org',
-      'Chef de Travaux',
-    ),
-    EnseignantFictif(
-      'M. Roger Mwenebatu',
-      'r.mwenebatu@exemple.org',
-      'Assistant',
-    ),
-  ];
+  final List<EnseignantFictif> enseignants = [];
+  final List<PromotionEnc> promotions = [];
 
-  late final List<PromotionEnc> promotions = [
-    PromotionEnc(
-      nom: 'L1 Informatique',
-      departement: 'Informatique',
-      chef: 'Aline Kitumaini',
-      cours: [
-        CoursEnc(
-          code: 'INF101',
-          intitule: "Introduction à l'algorithmique",
-          credits: 4,
-          volume: 30,
-          suivi: _suivi(
-            'INF101',
-            "Introduction à l'algorithmique",
-            'Dr Grâce Bahati',
-            'Chef de Travaux',
-            4,
-            30,
-            _gen('a', [
-              'Notion d\'algorithme',
-              'Variables et types',
-              'Structures conditionnelles',
-              'Boucles',
-              'Tableaux',
-            ], validees: 5),
-          ),
-        ),
-        CoursEnc(
-          code: 'INF102',
-          intitule: 'Architecture des ordinateurs',
-          credits: 3,
-          volume: 30,
-        ),
-        CoursEnc(
-          code: 'INF103',
-          intitule: 'Mathématiques discrètes',
-          credits: 4,
-          volume: 45,
-        ),
-        CoursEnc(
-          code: 'INF104',
-          intitule: 'Anglais technique',
-          credits: 2,
-          volume: 15,
-        ),
+  // Données brutes
+  Map<String, Map<String, dynamic>> _rPromo = {};
+  Map<String, Map<String, dynamic>> _rDept = {};
+  Map<String, Map<String, dynamic>> _rOffres = {};
+  List<Map<String, dynamic>> _rChefs = [];
+  final Map<String, PromotionEnc> _pObj = {};
+  final Map<String, CoursEnc> _cObj = {};
+  final List<StreamSubscription<dynamic>> _subs = [];
+
+  @override
+  Query<Map<String, dynamic>>? requete(String anneeId, String uid) {
+    final fac = Session.instance.me?.faculteId;
+    if (fac == null) return null;
+    return sessionsQuery(anneeId).where('faculte_id', isEqualTo: fac);
+  }
+
+  void _cancel() {
+    for (final s in _subs) {
+      s.cancel();
+    }
+    _subs.clear();
+  }
+
+  void _ecoute(
+    Query<Map<String, dynamic>> q,
+    void Function(QuerySnapshot<Map<String, dynamic>>) f,
+  ) {
+    _subs.add(
+      q.snapshots().listen((s) {
+        f(s);
+        onHubChange();
+      }, onError: (Object e) => Notif.erreur('Lecture : $e')),
+    );
+  }
+
+  @override
+  void onSessionChange(String? anneeId) {
+    _cancel();
+    final fac = Session.instance.me?.faculteId;
+    if (anneeId == null || fac == null) {
+      _rPromo = {};
+      _rDept = {};
+      _rOffres = {};
+      _rChefs = [];
+      enseignants.clear();
+      promotions.clear();
+      return;
+    }
+    final db = Fb.db;
+    _ecoute(
+      db.collection(Col.promotions).where('faculte_id', isEqualTo: fac),
+      (s) => _rPromo = {for (final d in s.docs) d.id: d.data()},
+    );
+    _ecoute(
+      db.collection(Col.departements).where('faculte_id', isEqualTo: fac),
+      (s) => _rDept = {for (final d in s.docs) d.id: d.data()},
+    );
+    _ecoute(
+      db
+          .collection(Col.offres)
+          .where('annee_id', isEqualTo: anneeId)
+          .where('faculte_id', isEqualTo: fac),
+      (s) => _rOffres = {for (final d in s.docs) d.id: d.data()},
+    );
+    _ecoute(
+      db
+          .collection(Col.utilisateurs)
+          .where('type_utilisateur', isEqualTo: 'CHEF_PROMOTION'),
+      (s) => _rChefs = [
+        for (final d in s.docs)
+          if (d.data()['est_actif'] == true) {...d.data(), '_id': d.id},
       ],
-    ),
-    PromotionEnc(
-      nom: 'L2 Informatique',
-      departement: 'Informatique',
-      chef: 'Patrick Bisimwa',
-      cours: [
-        CoursEnc(
-          code: 'INF204',
-          intitule: 'Bases de données relationnelles',
-          credits: 5,
-          volume: 45,
-          suivi: _suivi(
-            'INF204',
-            'Bases de données relationnelles',
-            'Dr Grâce Bahati',
-            'Chef de Travaux',
-            5,
-            45,
-            _gen('b', [
-              'Introduction aux SGBD',
-              'Modèle entité-association',
-              'Algèbre relationnelle',
-              'SQL : requêtes simples',
-              'SQL : jointures',
-              'Normalisation',
-            ], validees: 4),
-          ),
+    );
+    _ecoute(
+      db
+          .collection(Col.utilisateurs)
+          .where('type_utilisateur', isEqualTo: 'ENSEIGNANT'),
+      (s) {
+        enseignants
+          ..clear()
+          ..addAll(
+            s.docs.where((d) => d.data()['est_actif'] == true).map((d) {
+              final m = d.data();
+              final titre = (m['titre'] as String?) ?? '';
+              final nom = (m['nom'] as String?) ?? '';
+              return EnseignantFictif(
+                titre.isEmpty ? nom : '$titre $nom',
+                (m['email'] as String?) ?? '',
+                (m['grade_statutaire'] as String?) ?? '',
+                uid: d.id,
+              );
+            }),
+          );
+        enseignants.sort((a, b) => a.nom.compareTo(b.nom));
+      },
+    );
+  }
+
+  @override
+  void rebuild() {
+    _pObj.removeWhere((id, _) => !_rPromo.containsKey(id));
+    final offreIds = _rOffres.keys.toSet();
+    _cObj.removeWhere((id, _) => !offreIds.contains(id));
+
+    for (final e in _rPromo.entries) {
+      final p = _pObj.putIfAbsent(
+        e.key,
+        () => PromotionEnc(id: e.key, nom: '', departement: '', cours: []),
+      );
+      p.nom = (e.value['nom'] as String?) ?? '';
+      p.departement =
+          (_rDept[e.value['departement_id']]?['nom'] as String?) ?? '';
+      final chef = _rChefs
+          .where((c) => c['promotion_id'] == e.key)
+          .firstOrNull;
+      p.chef = chef?['nom'] as String?;
+      p.chefId = chef?['_id'] as String?;
+      p.cours.clear();
+    }
+
+    final offres = _rOffres.entries.toList()
+      ..sort(
+        (a, b) => ((a.value['code'] as String?) ?? '').compareTo(
+          (b.value['code'] as String?) ?? '',
         ),
-        CoursEnc(
-          code: 'INF210',
-          intitule: 'Programmation orientée objet',
-          credits: 5,
-          volume: 45,
-          suivi: _suivi(
-            'INF210',
-            'Programmation orientée objet',
-            'Pr Aimé Cirimwami',
-            'Professeur Ordinaire',
-            5,
-            45,
-            _gen(
-              'c',
-              [
-                'Classes et objets',
-                'Encapsulation et héritage',
-                'Polymorphisme',
-                'Interfaces',
-                'Exceptions',
-              ],
-              h1: 13,
-              h2: 17,
-              validees: 3,
-            ),
-          ),
-        ),
-        CoursEnc(
-          code: 'INF215',
-          intitule: 'Réseaux informatiques',
-          credits: 4,
-          volume: 30,
-          suivi: _suivi(
-            'INF215',
-            'Réseaux informatiques',
-            'Dr Alain Bulambo',
-            'Professeur Associé',
-            4,
-            30,
-            _gen(
-              'd',
-              ['Modèle OSI et TCP/IP', 'Adressage IPv4', 'Routage statique'],
-              h1: 8,
-              h2: 10,
-            ),
-          ),
-        ),
-        CoursEnc(
-          code: 'INF230',
-          intitule: 'Génie logiciel',
-          credits: 4,
-          volume: 30,
-        ),
-        CoursEnc(
-          code: 'MAT215',
-          intitule: 'Probabilités et statistiques',
-          credits: 4,
-          volume: 30,
-          suivi: _suivi(
-            'MAT215',
-            'Probabilités et statistiques',
-            'Pr Joseph Mushagalusa',
-            'Professeur',
-            4,
-            30,
-            _gen(
-              'e',
-              [
-                'Dénombrement',
-                'Probabilités conditionnelles',
-                'Variables aléatoires',
-                'Lois usuelles',
-                'Estimation',
-                "Tests d'hypothèses",
-              ],
-              h1: 8,
-              h2: 13,
-              validees: 6,
-            ),
-          ),
-        ),
-        CoursEnc(
-          code: 'INF220',
-          intitule: "Systèmes d'exploitation",
-          credits: 4,
-          volume: 30,
-          suivi: _suivi(
-            'INF220',
-            "Systèmes d'exploitation",
-            'Pr Aimé Cirimwami',
-            'Professeur Ordinaire',
-            4,
-            30,
-            _gen(
-              'f',
-              [
-                'Processus et threads',
-                'Ordonnancement',
-                'Synchronisation',
-                'Mémoire',
-                'Fichiers',
-                'Entrées / sorties',
-              ],
-              h1: 8,
-              h2: 13,
-              validees: 6,
-            ),
-            cloture: true,
-          ),
-        ),
-      ],
-    ),
-    PromotionEnc(
-      nom: 'L3 Informatique',
-      departement: 'Informatique',
-      cours: [
-        CoursEnc(
-          code: 'INF305',
-          intitule: 'Architecture logicielle',
-          credits: 4,
-          volume: 30,
-        ),
-        CoursEnc(
-          code: 'INF310',
-          intitule: 'Intelligence artificielle',
-          credits: 5,
-          volume: 45,
-        ),
-        CoursEnc(
-          code: 'INF320',
-          intitule: 'Sécurité informatique',
-          credits: 4,
-          volume: 30,
-          suivi: _suivi(
-            'INF320',
-            'Sécurité informatique',
-            'Pr Aimé Cirimwami',
-            'Professeur Ordinaire',
-            4,
-            30,
-            [],
-          ),
-        ),
-      ],
-    ),
-    PromotionEnc(
-      nom: 'L1 Mathématiques',
-      departement: 'Mathématiques',
-      chef: 'Jean Bulonza',
-      cours: [
-        CoursEnc(
-          code: 'MAT101',
-          intitule: 'Analyse mathématique I',
-          credits: 6,
-          volume: 60,
-          suivi: _suivi(
-            'MAT101',
-            'Analyse mathématique I',
-            'Pr Joseph Mushagalusa',
-            'Professeur',
-            6,
-            60,
-            _gen('g', [
-              'Suites numériques',
-              'Limites',
-              'Continuité',
-              'Dérivation',
-            ], validees: 2),
-          ),
-        ),
-        CoursEnc(
-          code: 'MAT102',
-          intitule: 'Algèbre linéaire',
-          credits: 5,
-          volume: 45,
-        ),
-      ],
-    ),
-  ];
+      );
+    for (final o in offres) {
+      final m = o.value;
+      final p = _pObj[m['promotion_id']];
+      if (p == null) continue;
+      final c = _cObj.putIfAbsent(
+        o.key,
+        () => CoursEnc(code: '', intitule: '', credits: 0, volume: 0),
+      );
+      c
+        ..code = (m['code'] as String?) ?? ''
+        ..intitule = (m['intitule'] as String?) ?? ''
+        ..credits = (m['credits'] as num?)?.toInt() ?? 0
+        ..volume = (m['volume'] as num?)?.toInt() ?? 0
+        ..offreId = o.key
+        ..coursId = (m['cours_id'] as String?) ?? ''
+        ..promotionId = p.id
+        ..promotionNom = p.nom
+        ..faculteId = (m['faculte_id'] as String?) ?? ''
+        ..suivi = hub.parCours((m['cours_id'] as String?) ?? '');
+      p.cours.add(c);
+    }
+
+    promotions
+      ..clear()
+      ..addAll(_pObj.values.toList()..sort((a, b) => a.nom.compareTo(b.nom)));
+  }
 
   // ── Compteurs ──
   int get nbANonAffectes => promotions.fold(0, (s, p) => s + p.nonSuivis);
   int get nbACloturer => promotions.fold(0, (s, p) => s + p.aCloturer);
 
   // ── Actions ──
-  void touch() => notifyListeners();
-
-  void affecter(CoursEnc c, EnseignantFictif e) {
-    c.suivi = CoursSuivi(
+  Future<bool> affecter(CoursEnc c, EnseignantFictif e) {
+    final annee = Session.instance.active;
+    final me = Session.instance.me;
+    if (annee == null || me == null) {
+      Notif.info("Aucune année active : impossible d'affecter.");
+      return Future.value(false);
+    }
+    final chef = promotions.where((p) => p.id == c.promotionId).firstOrNull;
+    return SuiviRepository.instance.creerSession(
+      anneeId: annee.id,
+      coursId: c.coursId,
       code: c.code,
       intitule: c.intitule,
-      enseignant: e.nom,
-      grade: e.grade,
       credits: c.credits,
       volume: c.volume,
+      faculteId: c.faculteId,
+      promotionId: c.promotionId,
+      promotionNom: c.promotionNom,
+      encadreurId: me.id,
+      enseignantId: e.uid,
+      enseignantNom: e.nom,
+      grade: e.grade,
+      chefId: chef?.chefId,
+      chefNom: chef?.chef,
     );
-    notifyListeners();
   }
 
-  void cloturer(CoursEnc c) {
-    c.suivi?.cloture = true;
-    notifyListeners();
+  Future<bool> cloturer(CoursEnc c) {
+    final s = c.suivi;
+    if (s == null) return Future.value(false);
+    return SuiviRepository.instance.cloturerSession(s);
   }
 
-  void deleteSeance(CoursEnc c, Seance s) {
-    c.suivi?.seances.remove(s);
-    notifyListeners();
+  Future<bool> deleteSeance(CoursEnc c, Seance s) {
+    final suivi = c.suivi;
+    if (suivi == null) return Future.value(false);
+    return SuiviRepository.instance.supprimerSeance(suivi, s);
   }
 
-  /// Outil de démonstration : l'enseignant valide toutes les séances.
-  void simulerValidation(CoursEnc c) {
-    for (final s in c.suivi?.seances ?? <Seance>[]) {
-      s.validee = true;
-    }
-    notifyListeners();
+  Future<bool> saveSeance(CoursEnc c, Seance s) {
+    final suivi = c.suivi;
+    if (suivi == null) return Future.value(false);
+    return SuiviRepository.instance.modifierSeance(suivi, s);
+  }
+
+  @override
+  void stop() {
+    _cancel();
+    super.stop();
   }
 }
 

@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:prestora/data/repositories/suivi_repository.dart';
+import 'package:prestora/data/repositories/suivi_store_base.dart';
+import 'package:prestora/data/services/session.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 // ═══════════════════════════════════════════════════════════════
-//  Modèles + données fictives de l'espace Étudiant (chef de promotion)
-//  EtudiantStore = faux dépôt, à remplacer par vos Cubits / Firebase.
+//  Modèles du suivi des prestations + dépôt du chef de promotion.
+//  Les données viennent de Firestore (sessions_suivi / seances) pour
+//  l'année académique ACTIVE.
 // ═══════════════════════════════════════════════════════════════
 
 String two(int n) => n.toString().padLeft(2, '0');
@@ -19,7 +24,6 @@ String fmtJour(DateTime d) {
 
 int minutesOf(TimeOfDay t) => t.hour * 60 + t.minute;
 
-// ───────────────────────── Types ─────────────────────────
 enum TypeSeance {
   cm('CM'),
   td('TD'),
@@ -27,11 +31,15 @@ enum TypeSeance {
 
   const TypeSeance(this.label);
   final String label;
+
+  static TypeSeance from(String? l) => TypeSeance.values.firstWhere(
+    (t) => t.label == l,
+    orElse: () => TypeSeance.cm,
+  );
 }
 
 enum StatutCours { enCours, valideParEnseignant, cloture }
 
-// ───────────────────────── Modèles ─────────────────────────
 class Seance {
   Seance({
     required this.id,
@@ -42,6 +50,8 @@ class Seance {
     this.type = TypeSeance.cm,
     this.validee = false,
     this.preuve,
+    this.preuveId,
+    this.encodeParId,
   });
 
   final String id;
@@ -52,13 +62,32 @@ class Seance {
   TypeSeance type;
   bool validee; // valide_par_prof
   String? preuve; // nom du fichier de la photo du registre
+  String? preuveId; // document de la collection `pieces`
+  String? encodeParId;
 
   double get heures => (minutesOf(fin) - minutesOf(debut)) / 60;
   String get tranche => '${fmtHeure(debut)} – ${fmtHeure(fin)}';
+
+  /// Met à jour cet objet depuis un document Firestore.
+  void applyMap(Map<String, dynamic> m) {
+    final d = m['date'];
+    if (d is Timestamp) date = d.toDate();
+    final a = (m['debut'] as num?)?.toInt() ?? 0;
+    final b = (m['fin'] as num?)?.toInt() ?? 0;
+    debut = TimeOfDay(hour: a ~/ 60, minute: a % 60);
+    fin = TimeOfDay(hour: b ~/ 60, minute: b % 60);
+    chapitre = (m['chapitre'] as String?) ?? '';
+    type = TypeSeance.from(m['type_seance'] as String?);
+    validee = m['valide_par_prof'] == true;
+    preuve = m['preuve_nom'] as String?;
+    preuveId = m['preuve_id'] as String?;
+    encodeParId = m['encode_par_id'] as String?;
+  }
 }
 
 class CoursSuivi {
   CoursSuivi({
+    this.id = '',
     required this.code,
     required this.intitule,
     required this.enseignant,
@@ -67,20 +96,38 @@ class CoursSuivi {
     required this.volume,
     List<Seance>? seances,
     this.cloture = false,
+    this.enseignantId = '',
+    this.chefId,
+    this.chefNom,
+    this.coursId = '',
+    this.promotionId = '',
+    this.promotionNom = '',
+    this.anneeId = '',
+    this.faculteId = '',
   }) : seances = seances ?? [];
 
-  final String code;
-  final String intitule;
-  final String enseignant;
-  final String grade;
-  final int credits;
-  final int volume; // volume_horaire_max
+  String id; // identifiant de la session Firestore
+  String code;
+  String intitule;
+  String enseignant; // titre + nom
+  String grade;
+  int credits;
+  int volume; // volume_horaire_max (de l'offre de l'année)
   final List<Seance> seances;
   bool cloture; // est_cloturee (par l'encadreur)
+  String enseignantId;
+  String? chefId;
+  String? chefNom; // chef de promotion (nom complet)
+  String coursId;
+  String promotionId;
+  String promotionNom;
+  String anneeId;
+  String faculteId;
 
   double get heuresPrestees => seances.fold(0.0, (s, e) => s + e.heures);
   double get heuresRestantes => volume - heuresPrestees;
-  double get progression => (heuresPrestees / volume).clamp(0.0, 1.0);
+  double get progression =>
+      volume <= 0 ? 0 : (heuresPrestees / volume).clamp(0.0, 1.0);
   int get nbValidees => seances.where((s) => s.validee).length;
   int get nbEncodees =>
       seances.length - nbValidees; // en attente de l'enseignant
@@ -94,197 +141,54 @@ class CoursSuivi {
     }
     return StatutCours.enCours;
   }
+
+  void applyMap(String sessionId, Map<String, dynamic> m) {
+    id = sessionId;
+    code = (m['code'] as String?) ?? '';
+    intitule = (m['intitule'] as String?) ?? '';
+    enseignant = (m['enseignant_nom'] as String?) ?? '';
+    grade = (m['grade'] as String?) ?? '';
+    credits = (m['credits'] as num?)?.toInt() ?? 0;
+    volume = (m['volume'] as num?)?.toInt() ?? 0;
+    cloture = m['est_cloturee'] == true;
+    enseignantId = (m['enseignant_id'] as String?) ?? '';
+    chefId = m['chef_promo_id'] as String?;
+    chefNom = m['chef_promo_nom'] as String?;
+    coursId = (m['cours_id'] as String?) ?? '';
+    promotionId = (m['promotion_id'] as String?) ?? '';
+    promotionNom = (m['promotion_nom'] as String?) ?? '';
+    anneeId = (m['annee_id'] as String?) ?? '';
+    faculteId = (m['faculte_id'] as String?) ?? '';
+  }
 }
 
-// ───────────────────────── Aides de fabrication ─────────────────────────
-Seance _s(
-  int id,
-  int m,
-  int d,
-  int h1,
-  int h2,
-  String chap, {
-  TypeSeance type = TypeSeance.cm,
-  bool v = false,
-  String? preuve,
-}) => Seance(
-  id: 's$id',
-  date: DateTime(2026, m, d),
-  debut: TimeOfDay(hour: h1, minute: 0),
-  fin: TimeOfDay(hour: h2, minute: 0),
-  chapitre: chap,
-  type: type,
-  validee: v,
-  preuve: preuve,
-);
+// ───────────────────────── Dépôt du chef de promotion ─────────────────────────
+class EtudiantStore extends SuiviStoreBase {
+  String get nom => Session.instance.me?.nomComplet ?? '';
+  String get promotion => Session.instance.promotionNom ?? '';
+  String get faculte => Session.instance.faculteNom ?? '';
+  String get initiale => nom.isEmpty ? '?' : nom.substring(0, 1).toUpperCase();
 
-List<Seance> _blocs(
-  String p,
-  int h1,
-  int h2,
-  List<String> chaps, {
-  bool validee = true,
-}) => List.generate(
-  chaps.length,
-  (i) => Seance(
-    id: '$p$i',
-    date: DateTime(2026, 9, 1 + i * 4),
-    debut: TimeOfDay(hour: h1, minute: 0),
-    fin: TimeOfDay(hour: h2, minute: 0),
-    chapitre: chaps[i],
-    validee: validee,
-  ),
-);
+  List<CoursSuivi> get cours => hub.cours;
 
-// ───────────────────────── Faux dépôt ─────────────────────────
-class EtudiantStore extends ChangeNotifier {
-  final String nom = 'Patrick Bisimwa';
-  final String promotion = 'L2 Informatique';
-  final String faculte = 'Sciences et Technologies';
+  @override
+  Query<Map<String, dynamic>>? requete(String anneeId, String uid) =>
+      sessionsQuery(anneeId).where('chef_promo_id', isEqualTo: uid);
 
-  final List<CoursSuivi> cours = [
-    CoursSuivi(
-      code: 'INF204',
-      intitule: 'Bases de données relationnelles',
-      enseignant: 'Dr Grâce Bahati',
-      grade: 'Chef de Travaux',
-      credits: 5,
-      volume: 45,
-      seances: [
-        _s(1, 9, 9, 8, 10, 'Introduction aux SGBD', v: true),
-        _s(2, 9, 11, 8, 11, 'Modèle entité-association', v: true),
-        _s(3, 9, 16, 8, 10, 'Algèbre relationnelle', v: true),
-        _s(
-          4,
-          9,
-          18,
-          10,
-          13,
-          'Modélisation : exercices dirigés',
-          type: TypeSeance.td,
-          v: true,
-        ),
-        _s(5, 9, 23, 8, 10, 'SQL : requêtes simples', v: true),
-        _s(6, 9, 25, 8, 11, 'SQL : jointures et sous-requêtes'),
-        _s(
-          7,
-          9,
-          30,
-          8,
-          10,
-          'Normalisation (1FN à 3FN)',
-          preuve: 'registre_30-09.jpg',
-        ),
-        _s(
-          8,
-          10,
-          7,
-          8,
-          11,
-          'Travaux pratiques MySQL',
-          type: TypeSeance.tp,
-          preuve: 'registre_07-10.jpg',
-        ),
-      ],
-    ),
-    CoursSuivi(
-      code: 'INF210',
-      intitule: 'Programmation orientée objet',
-      enseignant: 'Pr Aimé Cirimwami',
-      grade: 'Professeur Ordinaire',
-      credits: 5,
-      volume: 45,
-      seances: [
-        _s(11, 9, 8, 13, 17, 'Classes et objets', v: true),
-        _s(12, 9, 15, 13, 17, 'Encapsulation et héritage', v: true),
-        _s(13, 9, 22, 13, 17, 'Polymorphisme', v: true),
-        _s(14, 9, 29, 13, 17, 'Interfaces et classes abstraites', v: true),
-        _s(15, 10, 6, 13, 17, 'Gestion des exceptions'),
-        _s(16, 10, 13, 13, 17, 'Collections génériques'),
-      ],
-    ),
-    CoursSuivi(
-      code: 'INF215',
-      intitule: 'Réseaux informatiques',
-      enseignant: 'Dr Alain Bulambo',
-      grade: 'Professeur Associé',
-      credits: 4,
-      volume: 30,
-      seances: [
-        _s(21, 10, 1, 8, 10, 'Modèle OSI et TCP/IP'),
-        _s(22, 10, 8, 8, 10, 'Adressage IPv4 et sous-réseaux'),
-        _s(23, 10, 12, 8, 10, 'Routage statique', preuve: 'registre_12-10.jpg'),
-      ],
-    ),
-    CoursSuivi(
-      code: 'INF230',
-      intitule: 'Génie logiciel',
-      enseignant: 'Dr Esther Namwira',
-      grade: 'Professeur Associé',
-      credits: 4,
-      volume: 30,
-    ),
-    CoursSuivi(
-      code: 'MAT215',
-      intitule: 'Probabilités et statistiques',
-      enseignant: 'Pr Joseph Mushagalusa',
-      grade: 'Professeur',
-      credits: 4,
-      volume: 30,
-      seances: _blocs('m', 8, 13, [
-        'Dénombrement',
-        'Probabilités conditionnelles',
-        'Variables aléatoires discrètes',
-        'Lois usuelles',
-        'Estimation ponctuelle',
-        'Tests d\'hypothèses',
-      ]),
-    ),
-    CoursSuivi(
-      code: 'INF220',
-      intitule: "Systèmes d'exploitation",
-      enseignant: 'Pr Aimé Cirimwami',
-      grade: 'Professeur Ordinaire',
-      credits: 4,
-      volume: 30,
-      cloture: true,
-      seances: _blocs('o', 8, 13, [
-        'Processus et threads',
-        'Ordonnancement',
-        'Synchronisation',
-        'Gestion de la mémoire',
-        'Systèmes de fichiers',
-        'Entrées / sorties',
-      ]),
-    ),
-  ];
-
-  // ── Compteurs ──
   int get nbCoursActifs =>
       cours.where((c) => c.statut != StatutCours.cloture).length;
   int get nbAValider => cours.fold(0, (s, c) => s + c.nbEncodees);
   double get totalHeures => cours.fold(0.0, (s, c) => s + c.heuresPrestees);
 
   // ── Actions ──
-  void addSeance(CoursSuivi c, Seance s) {
-    c.seances.add(s);
-    notifyListeners();
-  }
+  Future<bool> addSeance(CoursSuivi c, Seance s) =>
+      SuiviRepository.instance.ajouterSeance(c, s);
 
-  void touch() => notifyListeners();
+  Future<bool> saveSeance(CoursSuivi c, Seance s) =>
+      SuiviRepository.instance.modifierSeance(c, s);
 
-  void deleteSeance(CoursSuivi c, Seance s) {
-    c.seances.remove(s);
-    notifyListeners();
-  }
-
-  /// Outil de démonstration : l'enseignant valide toutes les séances du cours.
-  void simulerValidationEnseignant(CoursSuivi c) {
-    for (final s in c.seances) {
-      s.validee = true;
-    }
-    notifyListeners();
-  }
+  Future<bool> deleteSeance(CoursSuivi c, Seance s) =>
+      SuiviRepository.instance.supprimerSeance(c, s);
 }
 
 final EtudiantStore etudiantStore = EtudiantStore();

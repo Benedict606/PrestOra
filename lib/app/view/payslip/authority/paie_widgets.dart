@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:prestora/data/services/piece_service.dart';
 import 'package:prestora/app/view/prestation/student/etudiant_data.dart';
 import 'package:prestora/app/view/teacher/enseignant_data.dart';
 import 'package:prestora/app/view/teacher/enseignant_modules.dart';
@@ -358,8 +359,14 @@ class DossierPage extends StatelessWidget {
                   InfoSection('Pièces jointes (${d.pieces.length})', [
                     if (d.pieces.isEmpty)
                       Text('Aucune pièce.', style: t.bodySmall),
-                    for (final p in d.pieces.take(4))
-                      Row(
+                    for (var i = 0; i < d.pieces.take(4).length; i++)
+                      InkWell(
+                        onTap: () => PieceService.voir(
+                          context,
+                          i < d.piecesIds.length ? d.piecesIds[i] : null,
+                          d.pieces[i],
+                        ),
+                        child: Row(
                         children: [
                           Icon(
                             Icons.photo_outlined,
@@ -369,13 +376,31 @@ class DossierPage extends StatelessWidget {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              p,
+                              d.pieces[i],
                               style: t.bodySmall?.copyWith(
                                 color: scheme.primary,
                               ),
                             ),
                           ),
                         ],
+                      ),
+                      ),
+                    if (d.bordereau != null)
+                      InkWell(
+                        onTap: () => PieceService.voir(
+                          context,
+                          d.bordereauId,
+                          d.bordereau!,
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            'Bordereau de paiement : ${d.bordereau}',
+                            style: t.bodySmall?.copyWith(
+                              color: scheme.primary,
+                            ),
+                          ),
+                        ),
                       ),
                     if (d.pieces.length > 4)
                       Text(

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:prestora/data/services/pdf_service.dart';
+import 'package:prestora/data/services/piece_service.dart';
 import 'package:prestora/app/view/prestation/student/etudiant_data.dart';
 import 'package:prestora/app/view/prestation/student/etudiant_modules.dart';
 
@@ -39,10 +41,14 @@ class CoursEnsPage extends StatelessWidget {
   final CoursEns cours;
 
   /// Exécute une action de validation puis prévient si le cours est complet.
-  void _run(BuildContext context, VoidCallback action) {
+  Future<void> _run(
+    BuildContext context,
+    Future<bool> Function() action,
+  ) async {
     final s = cours.suivi;
     final avant = s.statut;
-    action();
+    final ok = await action();
+    if (!ok || !context.mounted) return;
     if (avant != StatutCours.valideParEnseignant &&
         s.statut == StatutCours.valideParEnseignant) {
       _snack(
@@ -52,51 +58,8 @@ class CoursEnsPage extends StatelessWidget {
     }
   }
 
-  void _voirPreuve(BuildContext context, String fichier) {
-    final t = Theme.of(context).textTheme;
-    final scheme = Theme.of(context).colorScheme;
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => Dialog(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Photo du registre', style: t.headlineMedium),
-              const SizedBox(height: 12),
-              Container(
-                height: 220,
-                width: double.infinity,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: scheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: scheme.outline),
-                ),
-                child: Icon(
-                  Icons.image_outlined,
-                  size: 48,
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text('$fichier · aperçu simulé', style: t.bodySmall),
-              const SizedBox(height: 12),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text('Fermer'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  void _voirPreuve(BuildContext context, Seance seance) =>
+      PieceService.voir(context, seance.preuveId, seance.preuve ?? 'Photo du registre');
 
   @override
   Widget build(BuildContext context) {
@@ -190,6 +153,15 @@ class CoursEnsPage extends StatelessWidget {
                 ),
               ],
 
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => PdfService.partagerFicheCours(context, s),
+                  icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+                  label: const Text('Fiche de prestation (PDF)'),
+                ),
+              ),
               const SizedBox(height: 28),
               Row(
                 children: [
@@ -224,12 +196,14 @@ class CoursEnsPage extends StatelessWidget {
                   child: _SeanceValidationCard(
                     seance: seance,
                     lecture: lecture,
-                    onValider: () =>
-                        _run(context, () => enseignantStore.valider(seance)),
-                    onDevalider: () => enseignantStore.devalider(seance),
+                    onValider: () => _run(
+                      context,
+                      () => enseignantStore.valider(s, seance),
+                    ),
+                    onDevalider: () => enseignantStore.devalider(s, seance),
                     onPreuve: seance.preuve == null
                         ? null
-                        : () => _voirPreuve(context, seance.preuve!),
+                        : () => _voirPreuve(context, seance),
                   ),
                 ),
               SizedBox(height: 30),
@@ -633,12 +607,16 @@ class DossierDetailPage extends StatelessWidget {
                     SizedBox(
                       width: double.infinity,
                       child: FilledButton.icon(
-                        onPressed: () => _snack(
-                          context,
-                          'Quittance PDF : téléchargement simulé.',
-                        ),
+                        onPressed: () {
+                          final w = enseignantStore.wf[d.reference];
+                          if (w == null) {
+                            _snack(context, 'Dossier indisponible.');
+                          } else {
+                            PdfService.partagerEtat(context, w);
+                          }
+                        },
                         icon: const Icon(Icons.receipt_long_outlined, size: 18),
-                        label: const Text('Télécharger la quittance (PDF)'),
+                        label: const Text('Etat de paie (PDF)'),
                       ),
                     ),
                   ],
@@ -741,16 +719,35 @@ class DossierDetailPage extends StatelessWidget {
           const SizedBox(height: 12),
           Row(
             children: [
-              for (final f in const ['PDF', 'Excel', 'Word']) ...[
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () =>
-                        _snack(context, 'Fiche $f : téléchargement simulé.'),
-                    child: Text(f),
-                  ),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    final w = enseignantStore.wf[d.reference];
+                    if (w == null) {
+                      _snack(context, 'Dossier indisponible.');
+                    } else {
+                      PdfService.partagerFicheDossier(context, w);
+                    }
+                  },
+                  icon: const Icon(Icons.description_outlined, size: 18),
+                  label: const Text('Fiche de prestation'),
                 ),
-                if (f != 'Word') const SizedBox(width: 12),
-              ],
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    final w = enseignantStore.wf[d.reference];
+                    if (w == null) {
+                      _snack(context, 'Dossier indisponible.');
+                    } else {
+                      PdfService.partagerEtat(context, w);
+                    }
+                  },
+                  icon: const Icon(Icons.receipt_long_outlined, size: 18),
+                  label: const Text('Etat de paie'),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 40),
